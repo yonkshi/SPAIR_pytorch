@@ -240,12 +240,7 @@ def stn(image, z_where, output_dims, inverse=False):
 
     theta = torch.zeros(2, 3).repeat(batch_size, 1, 1)
 
-    if inverse:
-        xs = 1/xs
-        ys = 1/ys
-        yt = -yt / (ys + 1e-9)
-        xt = - xt / (xs + 1e-9)
-        out_dims = [batch_size, 4] + output_dims  # [Batch, RGBA, obj_h, obj_w]
+
 
     # set scaling
     theta[:, 0, 0] = xs  # TODO This scaling might not be compatible with pytorch affine_Grid
@@ -253,6 +248,17 @@ def stn(image, z_where, output_dims, inverse=False):
     # set translation
     theta[:, 0, -1] = xt
     theta[:, 1, -1] = yt
+
+    # inverse == upsampling
+    if inverse:
+        # convert theta to a square matrix to find inverse
+        t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1)
+        t = torch.cat([theta, t], dim=-2)
+
+        t = t.inverse()
+        print(t)
+        theta = t[:, :2, :]
+        out_dims = [batch_size, 4] + output_dims  # [Batch, RGBA, obj_h, obj_w]
 
     # 2. construct sampling grid
     grid = F.affine_grid(theta, out_dims)
