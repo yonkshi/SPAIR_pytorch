@@ -109,7 +109,7 @@ class Backbone(Module):
 
     def forward(self, x):
         padded_x = self.padding(x)
-        debug_tools.plot_stn_input_and_out(padded_x)
+        # debug_tools.plot_stn_input_and_out(padded_x)
         out = self.net(padded_x)
         return out
 
@@ -206,7 +206,7 @@ def exponential_decay(global_step:float, start, end, decay_rate, decay_step:floa
     return value
 
 
-def stn(image, z_where, out_dims, inverse=False):
+def stn(image, z_where, output_dims, inverse=False):
     """
     Slightly modified based on https://github.com/kamenbliznashki/generative_models/blob/master/air.py
 
@@ -230,11 +230,11 @@ def stn(image, z_where, out_dims, inverse=False):
     xs = xs.squeeze()
 
     batch_size = image.shape[0]
-    out_dims = [batch_size, 3] + out_dims # [Batch, RGB, obj_h, obj_w]
+    out_dims = [batch_size, 3] + output_dims # [Batch, RGB, obj_h, obj_w]
 
-    # yt/xt give top/left but here we need center
-    yt += 2 * (ys / 2) - 1 # TODO ? Why multiply by 2, to upsample?
-    xt += 2 * (xs / 2) - 1
+    # In order for scaling to work, we need to convert from top left corner of bbox to center of bbox
+    yt = (yt + (ys / 2)) * 2 - 1
+    xt = (xt + (xs / 2)) * 2 - 1
 
     # TODO  Clarification on the resampling process.
 
@@ -245,20 +245,20 @@ def stn(image, z_where, out_dims, inverse=False):
         ys = 1/ys
         yt = -yt / (ys + 1e-9)
         xt = - xt / (xs + 1e-9)
-        out_dims = [batch_size, 4] + out_dims  # [Batch, RGBA, obj_h, obj_w]
+        out_dims = [batch_size, 4] + output_dims  # [Batch, RGBA, obj_h, obj_w]
 
     # set scaling
     theta[:, 0, 0] = xs  # TODO This scaling might not be compatible with pytorch affine_Grid
     theta[:, 1, 1] = ys
     # set translation
     theta[:, 0, -1] = xt
-    theta[:, 0, -1] = yt
+    theta[:, 1, -1] = yt
 
     # 2. construct sampling grid
     grid = F.affine_grid(theta, out_dims)
 
     # 3. sample image from grid
-    input_glimpses = F.grid_sample(image, grid)
+    input_glimpses = F.grid_sample(image, grid, padding_mode='border')
     # debug_tools.plot_stn_input_and_out(input_glimpses)
 
 

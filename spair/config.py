@@ -24,7 +24,8 @@ N_LOOKBACK = 1
 
 TRAINING_WHEEL = 123 # TODO
 
-ANCHOR_BOX_SHAPE = [14,14]
+OBJECT_SHAPE = [14,14]
+ANCHORBOX_SHAPE = [48, 48]
 
 
 # Bounding box stuff, it's the maximum range relative to anchor box

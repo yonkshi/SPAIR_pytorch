@@ -32,6 +32,7 @@ class SPAIR(nn.Module):
         self._build_indep_prior()
 
         self.pixels_per_cell = tuple(int(i) for i in self.backbone.grid_cell_size) #[pixel_x, pixel_y]
+        print('model initialized')
 
     def forward(self, x, global_step = 0):
         # feature space
@@ -217,7 +218,7 @@ class SPAIR(nn.Module):
 
         # object attribute
         n_attr_out = 2 * cfg.N_ATTRIBUTES
-        obj_dim = cfg.ANCHOR_BOX_SHAPE[0]
+        obj_dim = cfg.OBJECT_SHAPE[0]
         n_inp_shape = obj_dim * obj_dim * 3 # flattening the 14 x 14 x 3 image
         self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
 
@@ -306,8 +307,8 @@ class SPAIR(nn.Module):
         # --- Compute image-normalized box parameters ---
 
         # box height and width normalized to image height and width
-        anchor_box_dim = cfg.ANCHOR_BOX_SHAPE[0]
-        image_height, image_width, _ = cfg.INPUT_IMAGE_SHAPE
+        anchor_box_dim = cfg.ANCHORBOX_SHAPE[0]
+        _, image_height, image_width = cfg.INPUT_IMAGE_SHAPE
         # bounding box height & width relative to the whole image
         ys = height * anchor_box_dim / image_height
         xs = width * anchor_box_dim / image_width
@@ -327,7 +328,7 @@ class SPAIR(nn.Module):
         ''' Uses spatial transformation to crop image '''
         # --- Get object attributes using object encoder ---
 
-        input_glimpses = stn(x, normalized_box, cfg.ANCHOR_BOX_SHAPE)
+        input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE)
         flat_input_glimpses = input_glimpses.flatten(start_dim=1) # flatten
         attr = self.object_encoder(flat_input_glimpses)
         # attr = attr.view(-1, 2 * cfg.N_ATTRIBUTES)
@@ -394,7 +395,7 @@ class SPAIR(nn.Module):
 
     def _render(self, z_attr, z_where, z_depth, z_pres):
         _, H, W = self.feature_space_dim
-        px = cfg.ANCHOR_BOX_SHAPE[0]
+        px = cfg.OBJECT_SHAPE[0]
 
         # ---- Now entering B x H x W x C realm, because we needed to merge B*H*W ----
 
@@ -439,6 +440,7 @@ class SPAIR(nn.Module):
         # TODO Blend alpha
         transformed_objects = transformed_imgs.contiguous().view(self.batch_size ,H, W, 4, img_h, img_w)
         # scale gradient
+        importance = importance.view(self.batch_size,H, W)
         importance = importance.expand_as(transformed_objects)
         gradient_scaled_objects = transformed_objects * importance + (1 - importance) * transformed_objects.detach()
 
