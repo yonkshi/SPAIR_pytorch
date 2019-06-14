@@ -2,6 +2,7 @@
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+import time
 
 def plot_stn_input_and_out( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0):
     ''' For visualizing '''
@@ -19,3 +20,13 @@ def plot_stn_input_and_out( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0
         plt.imshow(np_img)
         plt.show()
 
+def benchmark_init():
+    global BENCHMARK_INIT_TIME
+    BENCHMARK_INIT_TIME = time.time()
+
+def benchmark(name=''):
+    global BENCHMARK_INIT_TIME
+    now = time.time()
+    diff = now - BENCHMARK_INIT_TIME
+    BENCHMARK_INIT_TIME = now
+    print('{}: {:.4f} '.format(name, diff))

@@ -18,6 +18,7 @@ class SPAIR(nn.Module):
         self.B = 1 # TODO Change num bounding boxes
 
         # Keeps track of all distributions
+        self.dist_param = {}
         self.dist = {}
         # object presence probability
         self.obj_pres_prob = {}
@@ -94,13 +95,18 @@ class SPAIR(nn.Module):
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
 
         # Merge dist param, we have to use loop or autograd might not work
-        for dist_name, dist_params in self.dist.items():
-            means = self.dist[dist_name]['mean']
-            sigmas = self.dist[dist_name]['sigma']
+        for dist_name, dist_params in self.dist_param.items():
+            means = self.dist_param[dist_name]['mean']
+            sigmas = self.dist_param[dist_name]['sigma']
             self.dist[dist_name] = Normal(loc=means, scale=sigmas)
 
-        self._compute_KL(z_pres, z_pres_prob)
-        self._render(z_attr, z_where, z_depth, z_pres)
+        kl_loss = self._compute_KL(z_pres, z_pres_prob)
+
+        recon_x = self._render(z_attr, z_where, z_depth, z_pres)
+
+        loss = self._build_loss(x, recon_x, kl_loss)
+
+        return loss, recon_x
 
     def _compute_KL(self, z_pres, z_pres_prob):
         KL = {}
@@ -108,18 +114,21 @@ class SPAIR(nn.Module):
         for dist_name, dist_params in self.dist.items():
             dist = self.dist[dist_name]
             prior = self.kl_priors[dist_name]
-            KL[dist_name] = kl_divergence(dist, prior)
+            kl_div = kl_divergence(dist, prior)
+            masked = z_pres * kl_div
+            KL[dist_name] = masked
 
         # --- Object Presence KL ---
         # Special prior computation, refer to Appendix B for detail
         _, H, W = self.feature_space_dim
         HW = H * W
-        batch_size = self.batch_size # TODO change batch size
+        batch_size = self.batch_size
         count_support = torch.arange(HW + 1, dtype=torch.float32) # [50] ~ [0, 1, ... 50]
         # FIXME starts at 1 output and gets small gradually
-        count_prior_log_odds = exponential_decay(self.global_step, **cfg.OBJ_PRES_COUNT_LOG_PRIOR)
+        count_prior_log_odds = exponential_decay(100, **cfg.OBJ_PRES_COUNT_LOG_PRIOR) # TODO self.global_step
         count_prior_prob = torch.sigmoid(count_prior_log_odds)
-        count_distribution = (1 - count_prior_prob) * (count_prior_prob ** count_support) # [50]
+        # p(z_pres|C=nz(z_pres)) geometric dist, see appendix A
+        count_distribution = (1 - count_prior_prob) * (count_prior_prob ** count_support)
 
         normalizer = count_distribution.sum()
         count_distribution = count_distribution / normalizer
@@ -130,28 +139,29 @@ class SPAIR(nn.Module):
 
         i = 0
 
-        obj_kl = []
+        obj_kl = torch.empty(batch_size, 1, H, W)
 
         for h, w in itertools.product(range(H), range(W)):
-            p_z_given_Cz = torch.clamp(count_support - count_so_far, max=0) / (HW - i)
+            p_z_given_Cz = torch.clamp(count_support - count_so_far, min=0) / (HW - i)
 
             # Reshape for batch matmul
-            # Adds a new dim to to each vector for matrix multiplication [Batch, 50, ?]
-            _count_distribution = count_distribution[:, None, :]
-            _p_z_given_Cz = p_z_given_Cz[:, :, None]
+            # Adds a new dim to to each vector for dot product [Batch, 50, ?]
+            _count_distribution = count_distribution[:,None,:]
+            _p_z_given_Cz = p_z_given_Cz[:,:,None]
             # Computing the prior, flatten tensors [Batch, 1]
-            p_z = (_count_distribution * _p_z_given_Cz)[:, :, 0]
+            # equivalent of doing batch dot product on two vectors
+            p_z = torch.bmm(_count_distribution, _p_z_given_Cz).squeeze(-1)
 
             prob = z_pres_prob[:, :, h, w]
 
             # Bernoulli KL
             # note to self: May need to use safe log to prevent NaN
             _obj_kl = (
-                prob * (torch.log(prob) - torch.log(p_z))
-                + (1-prob) * (torch.log(1-prob) - torch.log(1-p_z))
+                prob * (safe_log(prob) - safe_log(p_z))
+                + (1-prob) * (safe_log(1-prob) - safe_log(1-p_z))
             )
 
-            obj_kl.append(_obj_kl)
+            obj_kl[:, :, h, w] = _obj_kl
 
             # Check if object presents (0.5 threshold)
             # original: tf.to_float(tensors["obj"][:, h, w, b, :] > 0.5), but obj should already be rounded
@@ -164,13 +174,18 @@ class SPAIR(nn.Module):
             count_distribution = mult * count_distribution
             normalizer = count_distribution.sum(dim=1, keepdim=True)
             # why clip normalizer?
-            normalizer = torch.clamp(normalizer, max=1e-6)
+            normalizer = torch.clamp(normalizer, min=1e-6)
             count_distribution = count_distribution / normalizer
-
+            isnan = torch.isnan(count_distribution).sum()
+            if isnan > 0:
+                print('oh fuck')
             count_so_far += sample
 
             i += 1
 
+        isnan = torch.isnan(obj_kl).sum()
+        if isnan > 0:
+            print('oh fuck')
 
         KL['pres_dist'] = obj_kl
 
@@ -194,11 +209,12 @@ class SPAIR(nn.Module):
 
         # sizes for localization [x, y, h, w], obj attributes, obj depth, obj presence
         sizes = [4, cfg.N_ATTRIBUTES, 1, 1]
-        t = torch.empty(sum(sizes), requires_grad=True)
+        t = torch.randn(sum(sizes), requires_grad=True)
         loc, attr, depth, pres = torch.split(t, sizes)
 
         loc = torch.nn.Sigmoid()(loc)
         pres = torch.nn.Sigmoid()(pres)
+        depth = torch.nn.Sigmoid()(depth)
 
         self.virtual_edge_element = torch.cat((loc, attr, depth, pres))
 
@@ -266,7 +282,7 @@ class SPAIR(nn.Module):
 
     def _build_box(self, latent_var, h, w):
         ''' Builds the bounding box from latent space z'''
-        # TODO Double check if I can replace exp with sigmoid
+
         mean, std = latent_to_mean_std(latent_var)
 
         mean, std = self._freeze_learning(mean, std)
@@ -382,18 +398,26 @@ class SPAIR(nn.Module):
         '''
         dist = Normal(loc=mean, scale=var)
 
-        if name not in self.dist.keys():
+        if name not in self.dist_param.keys():
             _, H, W = self.feature_space_dim
-            self.dist[name] = {}
-            self.dist[name]['mean'] = torch.empty(self.batch_size, H, W, mean.shape[-1])
-            self.dist[name]['sigma'] = torch.empty(self.batch_size, H, W, mean.shape[-1])
+            self.dist_param[name] = {}
+            self.dist_param[name]['mean'] = torch.empty(self.batch_size, mean.shape[-1], H, W, )
+            self.dist_param[name]['sigma'] = torch.empty(self.batch_size, mean.shape[-1], H, W, )
         x, y = cell_coord
-        self.dist[name]['mean'][:, x, y, :] = mean
-        self.dist[name]['sigma'][:, x, y, :] = var
+        self.dist_param[name]['mean'][:, :, x, y] = mean
+        self.dist_param[name]['sigma'][:, :, x, y] = var
 
         return dist.rsample()
 
     def _render(self, z_attr, z_where, z_depth, z_pres):
+        '''
+        decoder + renderer function. combines the latent vars & bbox, feed into the decoder for each object and then
+        :param z_attr:
+        :param z_where:
+        :param z_depth:
+        :param z_pres:
+        :return:
+        '''
         _, H, W = self.feature_space_dim
         px = cfg.OBJECT_SHAPE[0]
 
@@ -416,37 +440,76 @@ class SPAIR(nn.Module):
 
         # object_logits scale + bias mask
         object_logits[:, :, :, :-1] *= cfg.OBJ_LOGIT_SCALE  #[B, 14, 14, 4] * [4]
-        object_logits[:, :, :, -1] *= object_logits[:, :, :, -1] * cfg.ALPHA_LOGIT_SCALE + cfg.ALPHA_LOGIT_BIAS
+        object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
+        object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
+
+
 
         objects = clamped_sigmoid(object_logits)
-        objects = objects.view(-1, px, px, 4,)
+        # objects = torch.sigmoid(object_logits)
+        # objects = torch.clamp(object.view(-1, px, px, 4, )
+        # objects = torch.clamp(object_logits.view(-1, px, px, 4), min=0, max=1)
 
         # incorporate presence in alpha channel
-        objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1]) # Todo double check if broadcasting works
+        objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1])
 
         # importance manipulates how gradients scales, but does not nessasarily
-        importance = objects[:, :, :, -1] * z_depth.expand_as(objects[:,:,:,-1])
-        importance = torch.clamp(importance, max=0.01) # not sure why clamp it
+        objects_v2 = objects.clone()
+        importance = objects_v2[:, :, :, -1] * z_depth.expand_as(objects_v2[:,:,:,-1])
+        importance = torch.clamp(importance, min=0.01) # FIXME not sure why clamp it, why not softmax?
+
+        # Merge importance to objects:
+        importance = importance[..., None] # add a trailing dim for concatnation
+        objects = torch.cat([objects, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
 
         # ---- exiting B x H x W x C realm .... ----
 
         objects = to_C_H_W(objects)
 
         img_c, img_h, img_w, = (self.image_shape)
-
+        n_obj = H*W # max number of objects in a grid
         transformed_imgs = stn(objects, z_where, [img_h, img_w])
-
+        transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, 5, img_h, img_w)
         # incorporate alpha
-        # TODO Blend alpha
-        transformed_objects = transformed_imgs.contiguous().view(self.batch_size ,H, W, 4, img_h, img_w)
+        # FIXME The original implement doesn't seem to be calculating alpha correctly.
+        #  If multiple objects overlap one pixel, alpha is only computed against background
+        # TODO assume background is black. Will learn to construct different background in the future
+
+        # TODO we can potentially compute alpha and importance prior to stn, it will be much faster
+
+
+        rgb = transformed_objects[:, :, :3, :, :]
+        alpha = transformed_objects[:, :, 3:4, :, :] # keep the empty dim
+        importance = transformed_objects[:,:, 4:5, :, :]
+
+        img = alpha.expand_as(rgb) * rgb
+
+        # normalize importance
+        importance = importance / importance.sum(dim=1, keepdim=True)
+        importance = importance.expand_as(img)
         # scale gradient
-        importance = importance.view(self.batch_size,H, W)
-        importance = importance.expand_as(transformed_objects)
-        gradient_scaled_objects = transformed_objects * importance + (1 - importance) * transformed_objects.detach()
+        weighted_grads_image = img * importance # + (1 - importance) * img.detach()
 
-        gradient_scaled_objects.sum(dim=(1,2)) # sum up H and W to [Batch, image, 3
+        output_image = weighted_grads_image.sum(dim=1) # sum up along n_obj per image
+
+        return output_image
+
+    def _build_loss(self, x, recon_x, kl):
+
+        # Reconstruction loss
+        recon_loss = F.binary_cross_entropy(recon_x, x,) # recon loss
+
+        # KL loss with Beta factor
+        kl_loss = 0
+        for _, z_kl in kl.items():
+            kl_loss += torch.mean(torch.sum(z_kl, [1,2,3]))
+
+        loss = recon_loss + cfg.VAE_BETA * kl_loss
 
 
-        pass
+        return loss
+
+
+
 
 

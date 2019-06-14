@@ -179,7 +179,9 @@ def latent_to_mean_std(latent_var):
     return mean, std
 
 def clamped_sigmoid(logit):
-    return torch.sigmoid(torch.clamp(logit, -10, 10))
+    logit = torch.clamp(logit, -10, 10)
+    return 1 / ((-logit).exp() + 1)
+    # return torch.sigmoid(torch.clamp(logit, -10, 10))
 
 def exponential_decay(global_step:float, start, end, decay_rate, decay_step:float, staircase=False, log_space=False):
     '''
@@ -222,7 +224,6 @@ def stn(image, z_where, output_dims, inverse=False):
          [0, s]]               [0, 1/s]]
     """
 
-    # TODO Test stn
     yt, xt, ys, xs = torch.chunk(z_where, 4, dim=-1)
     yt = yt.squeeze()
     xt = xt.squeeze()
@@ -236,14 +237,10 @@ def stn(image, z_where, output_dims, inverse=False):
     yt = (yt + (ys / 2)) * 2 - 1
     xt = (xt + (xs / 2)) * 2 - 1
 
-    # TODO  Clarification on the resampling process.
-
     theta = torch.zeros(2, 3).repeat(batch_size, 1, 1)
 
-
-
     # set scaling
-    theta[:, 0, 0] = xs  # TODO This scaling might not be compatible with pytorch affine_Grid
+    theta[:, 0, 0] = xs
     theta[:, 1, 1] = ys
     # set translation
     theta[:, 0, -1] = xt
@@ -290,3 +287,6 @@ def to_H_W_C(t:torch.Tensor):
     # From [B, C, H, W] to [B, H, W, C]
     assert t.shape[2] == t.shape[3] and t.shape[1] != t.shape[2], 'are you sure this tensor is in [B, C, H, W] format?'
     return t.permute(0,2,3,1)
+
+def safe_log(t):
+    return torch.log(t + 1e-9)

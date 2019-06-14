@@ -45,6 +45,9 @@ PRIORS = {
     'depth_logit':[0., 1.],
 }
 
+# Beta factor for Beta VAE
+VAE_BETA = 100
+
 # training wheels
 LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0,
                                        end = 0.0,
@@ -53,7 +56,7 @@ LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0,
                                        staircase = True)
 
 # Dyanmic prior used by the object presence latent variable
-OBJ_PRES_COUNT_LOG_PRIOR = dict(start = 0.0,
+OBJ_PRES_COUNT_LOG_PRIOR = dict(start = 1000000.0,
                                        end = 0.0125,
                                        decay_rate=0.1,
                                        decay_step = 1000.,
@@ -65,3 +68,4 @@ OBJ_PRES_COUNT_LOG_PRIOR = dict(start = 0.0,
 OBJ_LOGIT_SCALE = 2.0
 ALPHA_LOGIT_SCALE = 0.1
 ALPHA_LOGIT_BIAS = 5.0
+
