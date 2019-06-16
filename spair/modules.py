@@ -49,8 +49,12 @@ class Backbone(Module):
         # Builds internal layers except for the last layer
         for i, layer in enumerate(self.topology):
             layer['in_channels'] = n_prev
-            f = layer.pop('filters')
-            layer['out_channels'] = f #rename
+
+            if 'filters' in layer.keys():
+                f = layer.pop('filters')
+                layer['out_channels'] = f #rename
+            else:
+                f = layer['out_channels']
 
             net['conv_%d' % i] = Conv2d(**layer)
             net['act_%d' % i] = ReLU()
@@ -91,13 +95,6 @@ class Backbone(Module):
         n_grid_cells = np.ceil(image_shape / grid_cell_size).astype('i')
         required_image_size = rf_size + (n_grid_cells - 1) * grid_cell_size
         post_padding = required_image_size - image_shape - pre_padding
-
-        print("rf_size: {}".format(rf_size))
-        print("grid_cell_size: {}".format(grid_cell_size))
-        print("n_grid_cells: {}".format(n_grid_cells))
-        print("pre_padding: {}".format(pre_padding))
-        print("post_padding: {}".format(post_padding))
-        print("required_image_size: {}".format(required_image_size))
 
         pad_top = pre_padding[0] # Height padding
         pad_bottom = post_padding[0]
@@ -183,7 +180,7 @@ def clamped_sigmoid(logit):
     return 1 / ((-logit).exp() + 1)
     # return torch.sigmoid(torch.clamp(logit, -10, 10))
 
-def exponential_decay(global_step:float, start, end, decay_rate, decay_step:float, staircase=False, log_space=False):
+def exponential_decay(global_step:float,device, start, end, decay_rate, decay_step:float, staircase=False, log_space=False, ):
     '''
     A decay helper function for computing decay of
     :param global_step:
@@ -195,7 +192,7 @@ def exponential_decay(global_step:float, start, end, decay_rate, decay_step:floa
     :param log_space:
     :return:
     '''
-    global_step = torch.tensor(global_step, dtype=torch.float32)
+    global_step = torch.tensor(global_step, dtype=torch.float32).to(device)
     if staircase:
         t = global_step // decay_step
     else:
@@ -208,7 +205,7 @@ def exponential_decay(global_step:float, start, end, decay_rate, decay_step:floa
     return value
 
 
-def stn(image, z_where, output_dims, inverse=False):
+def stn(image, z_where, output_dims, device, inverse=False):
     """
     Slightly modified based on https://github.com/kamenbliznashki/generative_models/blob/master/air.py
 
@@ -237,7 +234,7 @@ def stn(image, z_where, output_dims, inverse=False):
     yt = (yt + (ys / 2)) * 2 - 1
     xt = (xt + (xs / 2)) * 2 - 1
 
-    theta = torch.zeros(2, 3).repeat(batch_size, 1, 1)
+    theta = torch.zeros(2, 3).repeat(batch_size, 1, 1).to(device)
 
     # set scaling
     theta[:, 0, 0] = xs
@@ -249,11 +246,10 @@ def stn(image, z_where, output_dims, inverse=False):
     # inverse == upsampling
     if inverse:
         # convert theta to a square matrix to find inverse
-        t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1)
+        t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1).to(device)
         t = torch.cat([theta, t], dim=-2)
 
         t = t.inverse()
-        print(t)
         theta = t[:, :2, :]
         out_dims = [batch_size, 4] + output_dims  # [Batch, RGBA, obj_h, obj_w]
 
@@ -272,11 +268,11 @@ class SequentialMultipleOutput(Module):
     def __init__(self, input, outputs):
         super().__init__()
         self.body = Sequential(input)
-        self.output_layers = ModuleDict(outputs)
+        self.output_layers = ModuleList(list(outputs.values()))
 
     def forward(self, x):
         body_out = self.body(x)
-        return (output_layer(body_out) for output_layer in self.output_layers.values())
+        return (output_layer(body_out) for output_layer in self.output_layers)
 
 def to_C_H_W(t:torch.Tensor):
     # From [B, H, W, C] to [B, C, H, W]

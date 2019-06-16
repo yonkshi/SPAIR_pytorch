@@ -1,4 +1,5 @@
 import itertools
+import argparse
 
 import numpy as np
 import torch
@@ -7,15 +8,18 @@ from torch.nn import Sequential, Conv2d, ReLU, Linear
 from torch.nn import functional as F
 from torch.distributions import Normal, Uniform
 from torch.distributions.kl import kl_divergence
+from tensorboardX import SummaryWriter
 from spair import config as cfg
 from spair.modules import *
 
 class SPAIR(nn.Module):
-    def __init__(self, image_shape ):
+    def __init__(self, image_shape, writer:SummaryWriter, device):
         super().__init__()
         self.image_shape = image_shape
+        self.writer = writer
         # self.pixels_per_cell = pixels_per_cell
         self.B = 1 # TODO Change num bounding boxes
+        self.device = device
 
         # Keeps track of all distributions
         self.dist_param = {}
@@ -41,17 +45,19 @@ class SPAIR(nn.Module):
         feat = self.backbone(x)
         self.global_step = global_step
         self.batch_size = x.shape[0]
+
         context_mat = {}
 
-        z_where = torch.empty(self.batch_size, 4, H, W) # 4 = xt, yt, xs, ys
-        z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,)
-        z_depth = torch.empty(self.batch_size, 1, H, W)
-        z_pres = torch.empty(self.batch_size, 1, H, W)
-        z_pres_prob = torch.empty(self.batch_size, 1, H, W)
+        z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
+        z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
+        z_depth = torch.empty(self.batch_size, 1, H, W).to(self.device)
+        z_pres = torch.empty(self.batch_size, 1, H, W).to(self.device)
+        z_pres_prob = torch.empty(self.batch_size, 1, H, W).to(self.device)
 
         edge_element = self.virtual_edge_element[None,:].repeat(self.batch_size, 1)
-        self.training_wheel = exponential_decay(self.global_step, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
+        self.training_wheel = exponential_decay(self.global_step, self.device, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
 
+        debug_tools.benchmark_init()
         # Iterate through each grid cell and bounding boxes for that cell
         for h, w in itertools.product(range(H), range(W)):
 
@@ -65,7 +71,6 @@ class SPAIR(nn.Module):
             rep_input, passthru_features = self.box_network(layer_inp)
             box, normalized_box = self._build_box(rep_input, h, w)
             z_where[:, :, h, w,] = normalized_box
-
             # --- attr ---
             input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
             attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
@@ -93,18 +98,25 @@ class SPAIR(nn.Module):
             z_pres_prob[:, :, h, w] = obj_pres_prob
 
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
-
+        debug_tools.benchmark('First Loop')
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
             sigmas = self.dist_param[dist_name]['sigma']
             self.dist[dist_name] = Normal(loc=means, scale=sigmas)
+        debug_tools.benchmark('Merge Distribution')
+        if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
+        if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
+
 
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
+        debug_tools.benchmark('KL Divergence')
 
         recon_x = self._render(z_attr, z_where, z_depth, z_pres)
+        debug_tools.benchmark('Rendering')
 
         loss = self._build_loss(x, recon_x, kl_loss)
+        debug_tools.benchmark('Compute loss')
 
         return loss, recon_x
 
@@ -123,10 +135,11 @@ class SPAIR(nn.Module):
         _, H, W = self.feature_space_dim
         HW = H * W
         batch_size = self.batch_size
-        count_support = torch.arange(HW + 1, dtype=torch.float32) # [50] ~ [0, 1, ... 50]
+        count_support = torch.arange(HW + 1, dtype=torch.float32).to(self.device)# [50] ~ [0, 1, ... 50]
         # FIXME starts at 1 output and gets small gradually
-        count_prior_log_odds = exponential_decay(100, **cfg.OBJ_PRES_COUNT_LOG_PRIOR) # TODO self.global_step
-        count_prior_prob = torch.sigmoid(count_prior_log_odds)
+        count_prior_log_odds = exponential_decay(self.global_step, self.device, **cfg.OBJ_PRES_COUNT_LOG_PRIOR)
+        # count_prior_prob = torch.sigmoid(count_prior_log_odds)
+        count_prior_prob = 1 / ((-count_prior_log_odds).exp() + 1)
         # p(z_pres|C=nz(z_pres)) geometric dist, see appendix A
         count_distribution = (1 - count_prior_prob) * (count_prior_prob ** count_support)
 
@@ -135,14 +148,16 @@ class SPAIR(nn.Module):
         count_distribution = count_distribution.repeat(batch_size, 1)  # (Batch, 50)
 
         # number of symbols discovered so far
-        count_so_far = torch.zeros(batch_size, 1) # (Batch, 1)
+        count_so_far = torch.zeros(batch_size, 1).to(self.device) # (Batch, 1)
 
         i = 0
 
-        obj_kl = torch.empty(batch_size, 1, H, W)
+        obj_kl = torch.ones(batch_size, 1, H, W).to(self.device)
 
+        # print('\n\np_z_given_Cz%d'%i, p_z_given_Cz, torch.isnan(p_z_given_Cz).sum())
         for h, w in itertools.product(range(H), range(W)):
-            p_z_given_Cz = torch.clamp(count_support - count_so_far, min=0) / (HW - i)
+
+            p_z_given_Cz = torch.clamp(count_support - count_so_far, min=0., max=1.0) / (HW - i)
 
             # Reshape for batch matmul
             # Adds a new dim to to each vector for dot product [Batch, 50, ?]
@@ -171,21 +186,38 @@ class SPAIR(nn.Module):
 
             # update count distribution
             # FIXME why multiplying mult
-            count_distribution = mult * count_distribution
-            normalizer = count_distribution.sum(dim=1, keepdim=True)
+            count_distribution1 = mult * count_distribution
+            normalizer = count_distribution1.sum(dim=1, keepdim=True).clamp(min=1e-6)
             # why clip normalizer?
-            normalizer = torch.clamp(normalizer, min=1e-6)
-            count_distribution = count_distribution / normalizer
-            isnan = torch.isnan(count_distribution).sum()
-            if isnan > 0:
-                print('oh fuck')
+            # normalizer = torch.clamp(normalizer, min=1e-6)
+            count_distribution = count_distribution1 / normalizer
+
+            # Test underflow issues
+            isnan = torch.isnan(obj_kl).sum()
+            isneg = (count_distribution < 0).float().sum()
+            if isnan > 0 or isneg > 0:
+                print('\n\n\n\t------------------- NAN OCCURED %d-----------------\n' % i)
+                print('is neg', isneg)
+                print('is nan', isnan)
+                print('_obj_kl:\n', _obj_kl)
+                print('\np_z:\n', p_z)
+                # print('\nprob:\n', prob, 'hw', h,w)
+                print('\nprob:\n', prob)
+                # print('\nz_pres_prob max & min:\n', z_pres_prob.max(), ' min ', z_pres_prob.min())
+                print('\ncount_distribution:\n', count_distribution)
+                # print('\ncount_so_far:\n', count_so_far)
+                # print('\nHW, i:\n', HW, i)
+                # print('\nsample:\n', sample)
+                print('\np_z_given_Cz:\n', p_z_given_Cz)
+                # print('\nmult:\n', mult)
+                raise AssertionError('Yo you dun goof')
             count_so_far += sample
 
             i += 1
 
         isnan = torch.isnan(obj_kl).sum()
         if isnan > 0:
-            print('oh fuck')
+            print('oh final fuck')
 
         KL['pres_dist'] = obj_kl
 
@@ -207,9 +239,10 @@ class SPAIR(nn.Module):
          context requires 4 surrounding cells, if they fall outside grid, then this cell is used
          '''
 
+
         # sizes for localization [x, y, h, w], obj attributes, obj depth, obj presence
         sizes = [4, cfg.N_ATTRIBUTES, 1, 1]
-        t = torch.randn(sum(sizes), requires_grad=True)
+        t = torch.randn(sum(sizes), requires_grad=True).to(self.device)
         loc, attr, depth, pres = torch.split(t, sizes)
 
         loc = torch.nn.Sigmoid()(loc)
@@ -344,7 +377,7 @@ class SPAIR(nn.Module):
         ''' Uses spatial transformation to crop image '''
         # --- Get object attributes using object encoder ---
 
-        input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE)
+        input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE, self.device)
         flat_input_glimpses = input_glimpses.flatten(start_dim=1) # flatten
         attr = self.object_encoder(flat_input_glimpses)
         # attr = attr.view(-1, 2 * cfg.N_ATTRIBUTES)
@@ -360,7 +393,7 @@ class SPAIR(nn.Module):
         # Adding relative noise to object presence, possibly to prevent trivial mapping?
         eps = 10e-10
         u = Uniform(0, 1)
-        u = u.rsample(obj_log_odds.size())
+        u = u.rsample(obj_log_odds.size()).to(self.device)
         noise = torch.log(u + eps) - torch.log(1.0 - u + eps)
         obj_pre_sigmoid = (obj_log_odds + noise) / 1.0
 
@@ -401,8 +434,8 @@ class SPAIR(nn.Module):
         if name not in self.dist_param.keys():
             _, H, W = self.feature_space_dim
             self.dist_param[name] = {}
-            self.dist_param[name]['mean'] = torch.empty(self.batch_size, mean.shape[-1], H, W, )
-            self.dist_param[name]['sigma'] = torch.empty(self.batch_size, mean.shape[-1], H, W, )
+            self.dist_param[name]['mean'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
+            self.dist_param[name]['sigma'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
         x, y = cell_coord
         self.dist_param[name]['mean'][:, :, x, y] = mean
         self.dist_param[name]['sigma'][:, :, x, y] = var
@@ -431,7 +464,6 @@ class SPAIR(nn.Module):
         # flattening z depth and z presence for element-wise broadcasted multiplication later
         z_depth = z_depth.view(-1, 1, 1)
         z_pres = z_pres.view(-1, 1, 1)
-
         object_decoder_in = to_H_W_C(z_attr).contiguous().view(-1, cfg.N_ATTRIBUTES)
 
         # MLP to generate image
@@ -443,19 +475,14 @@ class SPAIR(nn.Module):
         object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
 
-
-
         objects = clamped_sigmoid(object_logits)
-        # objects = torch.sigmoid(object_logits)
-        # objects = torch.clamp(object.view(-1, px, px, 4, )
-        # objects = torch.clamp(object_logits.view(-1, px, px, 4), min=0, max=1)
+        objects = objects.view(-1, px, px, 4)
 
         # incorporate presence in alpha channel
         objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1])
 
         # importance manipulates how gradients scales, but does not nessasarily
-        objects_v2 = objects.clone()
-        importance = objects_v2[:, :, :, -1] * z_depth.expand_as(objects_v2[:,:,:,-1])
+        importance = objects[:, :, :, -1] * z_depth.expand_as(objects[:,:,:,-1])
         importance = torch.clamp(importance, min=0.01) # FIXME not sure why clamp it, why not softmax?
 
         # Merge importance to objects:
@@ -468,7 +495,7 @@ class SPAIR(nn.Module):
 
         img_c, img_h, img_w, = (self.image_shape)
         n_obj = H*W # max number of objects in a grid
-        transformed_imgs = stn(objects, z_where, [img_h, img_w])
+        transformed_imgs = stn(objects, z_where, [img_h, img_w],  self.device, inverse=True)
         transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, 5, img_h, img_w)
         # incorporate alpha
         # FIXME The original implement doesn't seem to be calculating alpha correctly.
@@ -495,16 +522,21 @@ class SPAIR(nn.Module):
         return output_image
 
     def _build_loss(self, x, recon_x, kl):
-
+        print('============ Losses =============')
         # Reconstruction loss
         recon_loss = F.binary_cross_entropy(recon_x, x,) # recon loss
-
+        self.writer.add_scalar('losses/reconst', recon_loss, self.global_step)
+        print('Reconstruction loss:', recon_loss)
         # KL loss with Beta factor
         kl_loss = 0
-        for _, z_kl in kl.items():
-            kl_loss += torch.mean(torch.sum(z_kl, [1,2,3]))
+        for name, z_kl in kl.items():
+            kl_mean = torch.mean(torch.sum(z_kl, [1,2,3]))
+            kl_loss += kl_mean
+            print('KL_%s_loss:' % name, kl_mean)
+            self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )
 
         loss = recon_loss + cfg.VAE_BETA * kl_loss
+        self.writer.add_scalar('losses/total', loss, self.global_step)
 
 
         return loss
