@@ -58,6 +58,7 @@ class SPAIR(nn.Module):
 
         edge_element = self.virtual_edge_element[None,:].repeat(self.batch_size, 1)
         self.training_wheel = exponential_decay(self.global_step, self.device, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
+        self.writer.add_scalar('training_wheel',self.training_wheel, self.global_step)
 
         s = torch.cuda.Stream()
         # Iterate through each grid cell and bounding boxes for that cell
@@ -102,13 +103,13 @@ class SPAIR(nn.Module):
                 z_pres_prob[:, :, h, w] = obj_pres_prob
 
                 context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
-            # Merge dist param, we have to use loop or autograd might not work
-            for dist_name, dist_params in self.dist_param.items():
-                means = self.dist_param[dist_name]['mean']
-                sigmas = self.dist_param[dist_name]['sigma']
-                self.dist[dist_name] = Normal(loc=means, scale=sigmas)
-            # if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
-            # if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
+        # Merge dist param, we have to use loop or autograd might not work
+        for dist_name, dist_params in self.dist_param.items():
+            means = self.dist_param[dist_name]['mean']
+            sigmas = self.dist_param[dist_name]['sigma']
+            self.dist[dist_name] = Normal(loc=means, scale=sigmas)
+        # if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
+        # if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
 
 
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
@@ -117,7 +118,7 @@ class SPAIR(nn.Module):
 
         loss = self._build_loss(x, recon_x, kl_loss)
 
-        return loss, recon_x
+        return loss, recon_x, z_where
 
     def _compute_KL(self, z_pres, z_pres_prob):
         KL = {}
@@ -214,9 +215,6 @@ class SPAIR(nn.Module):
 
             i += 1
 
-        isnan = torch.isnan(obj_kl).sum()
-        if isnan > 0:
-            print('oh final fuck')
 
         KL['pres_dist'] = obj_kl
 
@@ -350,7 +348,7 @@ class SPAIR(nn.Module):
         height = float(max_hw - min_hw) * height + min_hw
         width = float(max_hw - min_hw) * width + min_hw
 
-        box = torch.cat([cell_y, cell_x, height, width], dim=-1)
+        box = torch.cat([cell_x, cell_y, width, height], dim=-1)
 
         # --- Compute image-normalized box parameters ---
 
@@ -368,7 +366,7 @@ class SPAIR(nn.Module):
         yt -= ys / 2.
         xt -= xs / 2.
 
-        normalized_box = torch.cat([yt, xt, ys, xs], dim=-1)
+        normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
 
         return box, normalized_box
 

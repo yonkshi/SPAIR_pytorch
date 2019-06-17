@@ -42,12 +42,16 @@ def train():
     spair_optim = optim.Adam(params, lr=1e-4)
 
 
-    for global_step in range(1000):
+    for global_step in range(100000):
         print('Iteration', global_step)
         spair_optim.zero_grad()
-        loss, out_img = spair_net(imgs, global_step)
+        loss, out_img, z_where = spair_net(imgs, global_step)
         loss.backward(retain_graph = True)
         spair_optim.step()
+
+        # logging stuff
+        image = out_img[0]
+        writer.add_image('SPAIR output', image,  global_step)
         torch.cuda.empty_cache()
         print('=================\n\n')
 

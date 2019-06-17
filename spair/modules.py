@@ -229,7 +229,7 @@ def stn(image, z_where, output_dims, device, inverse=False):
          [0, s]]               [0, 1/s]]
     """
 
-    yt, xt, ys, xs = torch.chunk(z_where, 4, dim=-1)
+    xt, yt, xs, ys = torch.chunk(z_where, 4, dim=-1)
     yt = yt.squeeze()
     xt = xt.squeeze()
     ys = ys.squeeze()
@@ -238,7 +238,7 @@ def stn(image, z_where, output_dims, device, inverse=False):
     batch_size = image.shape[0]
     out_dims = [batch_size, 3] + output_dims # [Batch, RGB, obj_h, obj_w]
 
-    # In order for scaling to work, we need to convert from top left corner of bbox to center of bbox
+    # Important: in order for scaling to work, we need to convert from top left corner of bbox to center of bbox
     yt = (yt + (ys / 2)) * 2 - 1
     xt = (xt + (xs / 2)) * 2 - 1
 

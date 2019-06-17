@@ -51,7 +51,7 @@ VAE_BETA = 1
 # training wheels
 LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0,
                                        end = 0.0,
-                                       decay_rate = 0.0,
+                                       decay_rate = 0.9,
                                        decay_step = 1000.,
                                        staircase = True)
 
