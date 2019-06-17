@@ -175,10 +175,18 @@ def latent_to_mean_std(latent_var):
     std = torch.sigmoid(log_std.clamp(-10, 10)) * 2
     return mean, std
 
-def clamped_sigmoid(logit):
-    logit = torch.clamp(logit, -10, 10)
-    return 1 / ((-logit).exp() + 1)
-    # return torch.sigmoid(torch.clamp(logit, -10, 10))
+def clamped_sigmoid(logit, use_analytical=False):
+    '''
+    Sigmoid function,
+    :param logit:
+    :param use_analytical: use analytical sigmoid function to prevent backprop issues in pytorch
+    :return:
+    '''
+    # logit = torch.clamp(logit, -10, 10)
+    if use_analytical:
+        return 1 / ((-logit).exp() + 1)
+
+    return torch.sigmoid(torch.clamp(logit, -10, 10))
 
 def exponential_decay(global_step:float,device, start, end, decay_rate, decay_step:float, staircase=False, log_space=False, ):
     '''

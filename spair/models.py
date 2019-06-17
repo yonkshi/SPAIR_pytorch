@@ -21,12 +21,7 @@ class SPAIR(nn.Module):
         self.B = 1 # TODO Change num bounding boxes
         self.device = device
 
-        # Keeps track of all distributions
-        self.dist_param = {}
-        self.dist = {}
-        # object presence probability
-        self.obj_pres_prob = {}
-        self.obj_pres = {}
+
 
         # context box dimension based on N_lookbacks
         # totalsize is n_lookback_cells * [localization, attribute, depth, presence] ~= 224
@@ -46,6 +41,13 @@ class SPAIR(nn.Module):
         self.global_step = global_step
         self.batch_size = x.shape[0]
 
+        # Keeps track of all distributions
+        self.dist_param = {}
+        self.dist = {}
+        # object presence probability
+        self.obj_pres_prob = {}
+        self.obj_pres = {}
+
         context_mat = {}
 
         z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
@@ -57,66 +59,63 @@ class SPAIR(nn.Module):
         edge_element = self.virtual_edge_element[None,:].repeat(self.batch_size, 1)
         self.training_wheel = exponential_decay(self.global_step, self.device, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
 
-        debug_tools.benchmark_init()
+        s = torch.cuda.Stream()
         # Iterate through each grid cell and bounding boxes for that cell
-        for h, w in itertools.product(range(H), range(W)):
+        with torch.cuda.stream(s):
+            for h, w in itertools.product(range(H), range(W)):
 
-            # feature vec for each cell in the grid
-            cell_feat = feat[:, :, h, w]
 
-            context = self._get_sequential_context(context_mat, h,w, edge_element)
+                # feature vec for each cell in the grid
+                cell_feat = feat[:, :, h, w]
 
-            # --- box ---
-            layer_inp = torch.cat((cell_feat, context), dim=-1)
-            rep_input, passthru_features = self.box_network(layer_inp)
-            box, normalized_box = self._build_box(rep_input, h, w)
-            z_where[:, :, h, w,] = normalized_box
-            # --- attr ---
-            input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
-            attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
-            attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
-            z_attr[:, :, h, w, ] = attr
+                context = self._get_sequential_context(context_mat, h,w, edge_element)
 
-            # --- depth ---
-            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
+                # --- box ---
+                layer_inp = torch.cat((cell_feat, context), dim=-1)
+                rep_input, passthru_features = self.box_network(layer_inp)
+                box, normalized_box = self._build_box(rep_input, h, w)
+                z_where[:, :, h, w,] = normalized_box
+                # --- attr ---
+                input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
+                attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
+                attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
+                z_attr[:, :, h, w, ] = attr
 
-            depth_latent, passthru_features = self.z_network(layer_inp)
+                # --- depth ---
+                layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
 
-            depth_mean, depth_std = latent_to_mean_std(depth_latent)
-            depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
+                depth_latent, passthru_features = self.z_network(layer_inp)
 
-            depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
-            depth = 4 * clamped_sigmoid(depth_logits)
-            z_depth[:,:, h, w] = depth
+                depth_mean, depth_std = latent_to_mean_std(depth_latent)
+                depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
 
-            # --- presence ---
-            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
-            pres_logit = self.obj_network(layer_inp)
-            obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
+                depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
+                depth = 4 * clamped_sigmoid(depth_logits)
+                z_depth[:,:, h, w] = depth
 
-            z_pres[:,:, h,w] = obj_pres
-            z_pres_prob[:, :, h, w] = obj_pres_prob
+                # --- presence ---
+                layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
+                pres_logit = self.obj_network(layer_inp)
+                obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
 
-            context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
-        debug_tools.benchmark('First Loop')
-        # Merge dist param, we have to use loop or autograd might not work
-        for dist_name, dist_params in self.dist_param.items():
-            means = self.dist_param[dist_name]['mean']
-            sigmas = self.dist_param[dist_name]['sigma']
-            self.dist[dist_name] = Normal(loc=means, scale=sigmas)
-        debug_tools.benchmark('Merge Distribution')
-        if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
-        if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
+                z_pres[:,:, h,w] = obj_pres
+                z_pres_prob[:, :, h, w] = obj_pres_prob
+
+                context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
+            # Merge dist param, we have to use loop or autograd might not work
+            for dist_name, dist_params in self.dist_param.items():
+                means = self.dist_param[dist_name]['mean']
+                sigmas = self.dist_param[dist_name]['sigma']
+                self.dist[dist_name] = Normal(loc=means, scale=sigmas)
+            # if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
+            # if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
 
 
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
-        debug_tools.benchmark('KL Divergence')
 
         recon_x = self._render(z_attr, z_where, z_depth, z_pres)
-        debug_tools.benchmark('Rendering')
 
         loss = self._build_loss(x, recon_x, kl_loss)
-        debug_tools.benchmark('Compute loss')
 
         return loss, recon_x
 
@@ -475,7 +474,7 @@ class SPAIR(nn.Module):
         object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
 
-        objects = clamped_sigmoid(object_logits)
+        objects = clamped_sigmoid(object_logits, use_analytical=True)
         objects = objects.view(-1, px, px, 4)
 
         # incorporate presence in alpha channel
@@ -483,7 +482,7 @@ class SPAIR(nn.Module):
 
         # importance manipulates how gradients scales, but does not nessasarily
         importance = objects[:, :, :, -1] * z_depth.expand_as(objects[:,:,:,-1])
-        importance = torch.clamp(importance, min=0.01) # FIXME not sure why clamp it, why not softmax?
+        importance = torch.clamp(importance, min=0.01)
 
         # Merge importance to objects:
         importance = importance[..., None] # add a trailing dim for concatnation
@@ -526,16 +525,17 @@ class SPAIR(nn.Module):
         # Reconstruction loss
         recon_loss = F.binary_cross_entropy(recon_x, x,) # recon loss
         self.writer.add_scalar('losses/reconst', recon_loss, self.global_step)
-        print('Reconstruction loss:', recon_loss)
+        print('Reconstruction loss:', '{:.4f}'.format(recon_loss.item()))
         # KL loss with Beta factor
         kl_loss = 0
         for name, z_kl in kl.items():
             kl_mean = torch.mean(torch.sum(z_kl, [1,2,3]))
             kl_loss += kl_mean
-            print('KL_%s_loss:' % name, kl_mean)
+            print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
             self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )
 
         loss = recon_loss + cfg.VAE_BETA * kl_loss
+        print('\n ===> total loss:', '{:.4f}'.format(loss.item()))
         self.writer.add_scalar('losses/total', loss, self.global_step)
 
 

@@ -42,11 +42,11 @@ def train():
     spair_optim = optim.Adam(params, lr=1e-4)
 
 
-    for global_step in range(3):
+    for global_step in range(1000):
+        print('Iteration', global_step)
         spair_optim.zero_grad()
         loss, out_img = spair_net(imgs, global_step)
         loss.backward(retain_graph = True)
-        print('> step %d, loss done, begin computing spair' % global_step, loss)
         spair_optim.step()
         torch.cuda.empty_cache()
         print('=================\n\n')

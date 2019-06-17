@@ -46,7 +46,7 @@ PRIORS = {
 }
 
 # Beta factor for Beta VAE
-VAE_BETA = 100
+VAE_BETA = 1
 
 # training wheels
 LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0,
