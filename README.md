@@ -7,7 +7,7 @@ Pytorch implementation of [Spatially Invariant Unsupervised Object Detection wit
 Additional information can be found at [supplementary paper](http://e2crawfo.github.io/pdfs/aaai_2019_supplementary.pdf)
 
 Implementation based on the original tensorflow implementation by Eric Crawford: https://github.com/e2crawfo/auto_yolo 
-(Special thanks to Eric for patientialy explaining the details of his implementation)
+(Special thanks to Eric for patiently explaining the details of his implementation)
 
 # dependencies
 
