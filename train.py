@@ -42,18 +42,22 @@ def train():
 
     for global_step in range(100000):
         dataloader = torch_data.DataLoader(data,
-                                                  batch_size=cfg.BATCH_SIZE)
-        for iteration, batch in enumerate(dataloader):
-            debug_tools.plot_stn_input_and_out(batch)
-            print('Iteration', global_step)
+                                            batch_size=cfg.BATCH_SIZE,
+                                           pin_memory=True,
+                                           num_workers= 1,
+                                           )
+        for batch_idx, batch in enumerate(dataloader):
+            iteration = global_step * len(dataloader) + batch_idx
+            batch = batch.to(DEVICE)
+            print('Iteration', iteration)
             spair_optim.zero_grad()
-            loss, out_img, z_where = spair_net(batch, global_step)
+            loss, out_img, z_where = spair_net(batch, iteration)
             loss.backward(retain_graph = True)
             spair_optim.step()
 
             # logging stuff
             image = out_img[0]
-            writer.add_image('SPAIR output', image,  global_step)
+            writer.add_image('SPAIR output', image,  iteration)
             torch.cuda.empty_cache()
             print('=================\n\n')
 

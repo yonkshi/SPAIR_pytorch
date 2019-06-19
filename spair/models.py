@@ -61,7 +61,7 @@ class SPAIR(nn.Module):
         self.writer.add_scalar('training_wheel',self.training_wheel, self.global_step)
 
         # s = torch.cuda.Stream()
-        # # Iterate through each grid cell and bounding boxes for that cell
+        # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):
         for h, w in itertools.product(range(H), range(W)):
 
@@ -104,6 +104,8 @@ class SPAIR(nn.Module):
 
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
 
+
+
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
@@ -118,6 +120,8 @@ class SPAIR(nn.Module):
         recon_x = self._render(z_attr, z_where, z_depth, z_pres)
 
         loss = self._build_loss(x, recon_x, kl_loss)
+
+        self._debug_logging(z_where, z_attr, z_pres, z_depth)
 
         return loss, recon_x, z_where
 
@@ -344,7 +348,7 @@ class SPAIR(nn.Module):
         height = clamped_sigmoid(height_logits)
         width = clamped_sigmoid(width_logits)
         max_hw = cfg.MAX_HW
-        min_hw = cfg.MIN_YX
+        min_hw = cfg.MIN_HW
         assert max_hw > min_hw
         # hw ~ [0.0 , 1.0]
         # current bounding box height & width ratio to anchor box
@@ -370,6 +374,9 @@ class SPAIR(nn.Module):
         xt -= xs / 2.
 
         normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
+
+        if xs.min() < 0 or ys.min() < 0:
+            print('oh shoot')
 
         return box, normalized_box
 
@@ -542,6 +549,48 @@ class SPAIR(nn.Module):
 
 
         return loss
+
+
+    def _debug_logging(self, z_where, z_attr, z_pres, z_depth ):
+
+        if self.training_wheel == 1.0: # only start training when training wheel enables
+            return
+        z_where = z_where.cpu().detach()
+        z_pres = z_pres.cpu().detach()
+        z_depth = z_depth.cpu().detach()
+
+        _, H, W = self.feature_space_dim
+        h, w = np.random.randint(W, size=2)
+        np.set_printoptions(threshold=np.inf, precision=6)
+
+        print('=========== debugging information begin ===============')
+        box = z_where[0, :, h , w].numpy()
+        box_x, box_y, box_w, box_h = box
+        print('box:')
+        print(' x:\t{:.6f}'.format(box_x))
+        print(' y:\t{:.6f}'.format(box_y))
+        print(' w:\t{:.6f}'.format(box_w))
+        print(' h:\t{:.6f}'.format(box_h))
+
+        self.writer.add_histogram('box/x', z_where[0, 0, ...], self.global_step)
+        self.writer.add_histogram('box/y', z_where[0, 1, ...], self.global_step)
+        self.writer.add_histogram('box/w', z_where[0, 2, ...], self.global_step)
+        self.writer.add_histogram('box/h', z_where[0, 3, ...], self.global_step)
+        print('')
+        # z_presence
+        z_pres_np = z_pres[0, ...].numpy()
+        print('z_pres:', z_pres_np)
+        self.writer.add_scalar('z_presence/max', z_pres_np.max(), self.global_step)
+        self.writer.add_scalar('z_presence/mean', z_pres_np.mean(), self.global_step)
+        self.writer.add_scalar('z_presence/min', z_pres_np.min(), self.global_step)
+        print('')
+        # z_depth
+        z_depth_np = z_depth[0, ...].numpy()
+        print('z_depth:', z_depth_np)
+        self.writer.add_scalar('z_depth/max', z_depth_np.max(), self.global_step)
+        self.writer.add_scalar('z_depth/mean', z_depth_np.mean(), self.global_step)
+        self.writer.add_scalar('z_depth/min', z_depth_np.min(), self.global_step)
+        print('========= end of debugging info  ======================')
 
 
 
