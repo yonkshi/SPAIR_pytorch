@@ -60,49 +60,50 @@ class SPAIR(nn.Module):
         self.training_wheel = exponential_decay(self.global_step, self.device, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
         self.writer.add_scalar('training_wheel',self.training_wheel, self.global_step)
 
-        s = torch.cuda.Stream()
-        # Iterate through each grid cell and bounding boxes for that cell
-        with torch.cuda.stream(s):
-            for h, w in itertools.product(range(H), range(W)):
+        # s = torch.cuda.Stream()
+        # # Iterate through each grid cell and bounding boxes for that cell
+        # with torch.cuda.stream(s):
+        for h, w in itertools.product(range(H), range(W)):
 
 
-                # feature vec for each cell in the grid
-                cell_feat = feat[:, :, h, w]
+            # feature vec for each cell in the grid
+            cell_feat = feat[:, :, h, w]
 
-                context = self._get_sequential_context(context_mat, h,w, edge_element)
+            context = self._get_sequential_context(context_mat, h,w, edge_element)
 
-                # --- box ---
-                layer_inp = torch.cat((cell_feat, context), dim=-1)
-                rep_input, passthru_features = self.box_network(layer_inp)
-                box, normalized_box = self._build_box(rep_input, h, w)
-                z_where[:, :, h, w,] = normalized_box
-                # --- attr ---
-                input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
-                attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
-                attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
-                z_attr[:, :, h, w, ] = attr
+            # --- box ---
+            layer_inp = torch.cat((cell_feat, context), dim=-1)
+            rep_input, passthru_features = self.box_network(layer_inp)
+            box, normalized_box = self._build_box(rep_input, h, w)
+            z_where[:, :, h, w,] = normalized_box
+            # --- attr ---
+            input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
+            attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
+            attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
+            z_attr[:, :, h, w, ] = attr
 
-                # --- depth ---
-                layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
+            # --- depth ---
+            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
 
-                depth_latent, passthru_features = self.z_network(layer_inp)
+            depth_latent, passthru_features = self.z_network(layer_inp)
 
-                depth_mean, depth_std = latent_to_mean_std(depth_latent)
-                depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
+            depth_mean, depth_std = latent_to_mean_std(depth_latent)
+            depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
 
-                depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
-                depth = 4 * clamped_sigmoid(depth_logits)
-                z_depth[:,:, h, w] = depth
+            depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
+            depth = 4 * clamped_sigmoid(depth_logits)
+            z_depth[:,:, h, w] = depth
 
-                # --- presence ---
-                layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
-                pres_logit = self.obj_network(layer_inp)
-                obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
+            # --- presence ---
+            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
+            pres_logit = self.obj_network(layer_inp)
+            obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
 
-                z_pres[:,:, h,w] = obj_pres
-                z_pres_prob[:, :, h, w] = obj_pres_prob
+            z_pres[:,:, h,w] = obj_pres
+            z_pres_prob[:, :, h, w] = obj_pres_prob
 
-                context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
+            context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
+
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
@@ -265,7 +266,8 @@ class SPAIR(nn.Module):
         # object attribute
         n_attr_out = 2 * cfg.N_ATTRIBUTES
         obj_dim = cfg.OBJECT_SHAPE[0]
-        n_inp_shape = obj_dim * obj_dim * 3 # flattening the 14 x 14 x 3 image
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
         self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
 
         # object depth
@@ -277,7 +279,8 @@ class SPAIR(nn.Module):
         self.obj_network = build_MLP(obj_inp_shape, 1)
 
         # object decoder
-        decoded_dim = obj_dim * obj_dim * 4 #
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
         self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
 
     def _get_sequential_context(self, context_mat:dict, h, w, edge_element):
@@ -465,7 +468,8 @@ class SPAIR(nn.Module):
 
         # MLP to generate image
         object_logits = self.object_decoder(object_decoder_in)
-        object_logits = object_logits.view(-1, px, px, 4) # [Batch * n_cells, pixels_w, pixels_h, channels]
+        input_chan_w_alpha = cfg.INPUT_IMAGE_SHAPE[0] + 1
+        object_logits = object_logits.view(-1, px, px, input_chan_w_alpha) # [Batch * n_cells, pixels_w, pixels_h, channels]
 
         # object_logits scale + bias mask
         object_logits[:, :, :, :-1] *= cfg.OBJ_LOGIT_SCALE  #[B, 14, 14, 4] * [4]
@@ -473,7 +477,7 @@ class SPAIR(nn.Module):
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
 
         objects = clamped_sigmoid(object_logits, use_analytical=True)
-        objects = objects.view(-1, px, px, 4)
+        objects = objects.view(-1, px, px, input_chan_w_alpha)
 
         # incorporate presence in alpha channel
         objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1])
@@ -493,7 +497,7 @@ class SPAIR(nn.Module):
         img_c, img_h, img_w, = (self.image_shape)
         n_obj = H*W # max number of objects in a grid
         transformed_imgs = stn(objects, z_where, [img_h, img_w],  self.device, inverse=True)
-        transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, 5, img_h, img_w)
+        transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, img_c + 2 , img_h, img_w)
         # incorporate alpha
         # FIXME The original implement doesn't seem to be calculating alpha correctly.
         #  If multiple objects overlap one pixel, alpha is only computed against background
@@ -501,12 +505,12 @@ class SPAIR(nn.Module):
 
         # TODO we can potentially compute alpha and importance prior to stn, it will be much faster
 
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        color_channels  = transformed_objects[:, :, :input_chan, :, :]
+        alpha = transformed_objects[:, :, input_chan:input_chan+1, :, :] # keep the empty dim
+        importance = transformed_objects[:,:, input_chan+1:input_chan+2, :, :]
 
-        rgb = transformed_objects[:, :, :3, :, :]
-        alpha = transformed_objects[:, :, 3:4, :, :] # keep the empty dim
-        importance = transformed_objects[:,:, 4:5, :, :]
-
-        img = alpha.expand_as(rgb) * rgb
+        img = alpha.expand_as(color_channels) * color_channels
 
         # normalize importance
         importance = importance / importance.sum(dim=1, keepdim=True)
@@ -527,7 +531,7 @@ class SPAIR(nn.Module):
         # KL loss with Beta factor
         kl_loss = 0
         for name, z_kl in kl.items():
-            kl_mean = torch.mean(torch.sum(z_kl, [1,2,3]))
+            kl_mean = torch.mean(torch.sum(z_kl, dim=[1,2,3])) # batch mean
             kl_loss += kl_mean
             print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
             self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )

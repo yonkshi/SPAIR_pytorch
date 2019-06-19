@@ -5,11 +5,14 @@ import numpy as np
 import cv2
 import torch
 from torch import nn, optim
+from torch.utils import data as torch_data
 from tensorboardX import SummaryWriter
 from coolname import generate_slug
 
 from spair.models import SPAIR
 from spair import config as cfg
+from spair.dataloader import SimpleScatteredMNISTDataset
+from spair import debug_tools
 
 dt = datetime.today().strftime('%b-%d') + '-' + generate_slug(2)
 writer = SummaryWriter('logs_v2/%s' % dt)
@@ -28,12 +31,7 @@ def train():
     image_shape = cfg.INPUT_IMAGE_SHAPE
 
     # Test image setup
-    img_BGR = cv2.imread('spair/data/testimg.png')
-    img = img_BGR[..., ::-1].astype(np.float) # BGR to RGB
-    img /= 255. # color space [0, 1]
-
-    img = torch.from_numpy(np.array([np.moveaxis(img, [0,1,2], [1,2,0])], dtype=np.float32))
-    imgs = img.repeat(32, 1, 1, 1).to(DEVICE)
+    data = SimpleScatteredMNISTDataset('spair/data/scattered_mnist.hdf5')
     torch.manual_seed(3)
 
     spair_net = SPAIR(image_shape, writer, DEVICE).to(DEVICE)
@@ -43,17 +41,21 @@ def train():
 
 
     for global_step in range(100000):
-        print('Iteration', global_step)
-        spair_optim.zero_grad()
-        loss, out_img, z_where = spair_net(imgs, global_step)
-        loss.backward(retain_graph = True)
-        spair_optim.step()
+        dataloader = torch_data.DataLoader(data,
+                                                  batch_size=cfg.BATCH_SIZE)
+        for iteration, batch in enumerate(dataloader):
+            debug_tools.plot_stn_input_and_out(batch)
+            print('Iteration', global_step)
+            spair_optim.zero_grad()
+            loss, out_img, z_where = spair_net(batch, global_step)
+            loss.backward(retain_graph = True)
+            spair_optim.step()
 
-        # logging stuff
-        image = out_img[0]
-        writer.add_image('SPAIR output', image,  global_step)
-        torch.cuda.empty_cache()
-        print('=================\n\n')
+            # logging stuff
+            image = out_img[0]
+            writer.add_image('SPAIR output', image,  global_step)
+            torch.cuda.empty_cache()
+            print('=================\n\n')
 
     child_nr = 0
 

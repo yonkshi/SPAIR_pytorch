@@ -236,7 +236,8 @@ def stn(image, z_where, output_dims, device, inverse=False):
     xs = xs.squeeze()
 
     batch_size = image.shape[0]
-    out_dims = [batch_size, 3] + output_dims # [Batch, RGB, obj_h, obj_w]
+    color_chans = cfg.INPUT_IMAGE_SHAPE[0]
+    out_dims = [batch_size, color_chans] + output_dims # [Batch, RGB, obj_h, obj_w]
 
     # Important: in order for scaling to work, we need to convert from top left corner of bbox to center of bbox
     yt = (yt + (ys / 2)) * 2 - 1
@@ -256,10 +257,12 @@ def stn(image, z_where, output_dims, device, inverse=False):
         # convert theta to a square matrix to find inverse
         t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1).to(device)
         t = torch.cat([theta, t], dim=-2)
-
+        print('stn transform', t)
+        print('transformation contains nan?', torch.isnan(t).sum())
+        print('transformation shape', t.size() )
         t = t.inverse()
         theta = t[:, :2, :]
-        out_dims = [batch_size, 4] + output_dims  # [Batch, RGBA, obj_h, obj_w]
+        out_dims = [batch_size, color_chans + 1] + output_dims  # [Batch, RGBA, obj_h, obj_w]
 
     # 2. construct sampling grid
     grid = F.affine_grid(theta, out_dims)

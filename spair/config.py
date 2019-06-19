@@ -1,5 +1,5 @@
 BATCH_SIZE = 32
-INPUT_IMAGE_SHAPE = [3, 128, 128]
+INPUT_IMAGE_SHAPE = [1, 128, 128]
 
 DEFAULT_MLP_TOPOLOGY = [100, 100]
 DEFAULT_BACKBONE_TOPOLOGY = [
@@ -21,8 +21,6 @@ N_CONTEXT_DIM = 4 + N_ATTRIBUTES + 1 + 1
 
 # Defines the range in which neighbouring cells are sampled to compute lateral context
 N_LOOKBACK = 1
-
-TRAINING_WHEEL = 123 # TODO
 
 OBJECT_SHAPE = [14,14]
 ANCHORBOX_SHAPE = [48, 48]
@@ -49,10 +47,10 @@ PRIORS = {
 VAE_BETA = 1
 
 # training wheels
-LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0,
+LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 0.9, # 1.0
                                        end = 0.0,
                                        decay_rate = 0.9,
-                                       decay_step = 1000.,
+                                       decay_step = 100.,
                                        staircase = True)
 
 # Dyanmic prior used by the object presence latent variable
