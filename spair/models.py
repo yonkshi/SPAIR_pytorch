@@ -92,12 +92,20 @@ class SPAIR(nn.Module):
 
             depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
             depth = 4 * clamped_sigmoid(depth_logits)
+            # TODO DELETE ME
+            depth = torch.ones_like(depth)
+            # TODO END
             z_depth[:,:, h, w] = depth
 
             # --- presence ---
             layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
             pres_logit = self.obj_network(layer_inp)
             obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
+
+            # TODO DELETE ME
+            obj_pres = torch.ones_like(obj_pres)
+            obj_pres_prob = torch.ones_like(obj_pres_prob)
+            # TODO END
 
             z_pres[:,:, h,w] = obj_pres
             z_pres_prob[:, :, h, w] = obj_pres_prob
@@ -121,7 +129,7 @@ class SPAIR(nn.Module):
 
         loss = self._build_loss(x, recon_x, kl_loss)
 
-        self._debug_logging(z_where, z_attr, z_pres, z_depth)
+        # self._debug_logging(z_where, z_attr, z_pres, z_depth)
 
         return loss, recon_x, z_where
 
@@ -355,6 +363,12 @@ class SPAIR(nn.Module):
         height = float(max_hw - min_hw) * height + min_hw
         width = float(max_hw - min_hw) * width + min_hw
 
+        # TODO Debugging bounding box
+        cell_y = torch.zeros_like(cell_y)
+        cell_x = torch.zeros_like(cell_x)
+        height = torch.ones_like(height)
+        width  = torch.ones_like(width)
+        # TODO end debugging
         box = torch.cat([cell_x, cell_y, width, height], dim=-1)
 
         # --- Compute image-normalized box parameters ---
@@ -497,13 +511,16 @@ class SPAIR(nn.Module):
         importance = importance[..., None] # add a trailing dim for concatnation
         objects = torch.cat([objects, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
 
+        # TODO debug output image, remove me later
+        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, self.writer, self.global_step)
+
         # ---- exiting B x H x W x C realm .... ----
 
-        objects = to_C_H_W(objects)
+        objects_ = to_C_H_W(objects)
 
         img_c, img_h, img_w, = (self.image_shape)
         n_obj = H*W # max number of objects in a grid
-        transformed_imgs = stn(objects, z_where, [img_h, img_w],  self.device, inverse=True)
+        transformed_imgs = stn(objects_, z_where, [img_h, img_w],  self.device, inverse=True)
         transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, img_c + 2 , img_h, img_w)
         # incorporate alpha
         # FIXME The original implement doesn't seem to be calculating alpha correctly.
@@ -549,7 +566,6 @@ class SPAIR(nn.Module):
 
 
         return loss
-
 
     def _debug_logging(self, z_where, z_attr, z_pres, z_depth ):
 

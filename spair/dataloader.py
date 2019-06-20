@@ -15,7 +15,7 @@ class SimpleScatteredMNISTDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         ret = []
 
-        obs = self.dataset[index, ...]
+        obs = self.dataset[0, ...] # TODO index fixed to 0
         obs = obs[..., None]  # Add channel dimension
         ret = np.moveaxis(obs, -1, 0)  # move from (x, y, c) to (c, x, y)
 

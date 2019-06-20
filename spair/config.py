@@ -1,3 +1,5 @@
+import os
+
 BATCH_SIZE = 32
 INPUT_IMAGE_SHAPE = [1, 128, 128]
 
@@ -67,3 +69,7 @@ OBJ_LOGIT_SCALE = 2.0
 ALPHA_LOGIT_SCALE = 0.1
 ALPHA_LOGIT_BIAS = 5.0
 
+
+# environment variables
+
+IS_LOCAL = 'LOCAL' in os.environ

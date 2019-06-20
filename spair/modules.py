@@ -268,7 +268,8 @@ def stn(image, z_where, output_dims, device, inverse=False):
     grid = F.affine_grid(theta, out_dims)
 
     # 3. sample image from grid
-    input_glimpses = F.grid_sample(image, grid, padding_mode='border')
+    padding_mode = 'border' if not inverse else 'zeros'
+    input_glimpses = F.grid_sample(image, grid, padding_mode=padding_mode)
     # debug_tools.plot_stn_input_and_out(input_glimpses)
 
 
