@@ -22,7 +22,7 @@ N_CONTEXT_DIM = 4 + N_ATTRIBUTES + 1 + 1
 # Defines the range in which neighbouring cells are sampled to compute lateral context
 N_LOOKBACK = 1
 
-OBJECT_SHAPE = [14,14]
+OBJECT_SHAPE = [28,28]
 ANCHORBOX_SHAPE = [48, 48]
 
 

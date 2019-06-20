@@ -56,8 +56,10 @@ def train():
             spair_optim.step()
 
             # logging stuff
-            image = out_img[0]
-            writer.add_image('SPAIR output', image,  iteration)
+            image_out = out_img[0]
+            image_in = batch[0]
+            combined_image = torch.cat([image_in, image_out], dim=2)
+            writer.add_image('SPAIR input_output', combined_image,  iteration)
             torch.cuda.empty_cache()
             print('=================\n\n')
 
