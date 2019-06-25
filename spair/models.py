@@ -51,7 +51,7 @@ class SPAIR(nn.Module):
         context_mat = {}
 
         z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
-        z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
+        self.z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
         z_depth = torch.empty(self.batch_size, 1, H, W).to(self.device)
         z_pres = torch.empty(self.batch_size, 1, H, W).to(self.device)
         z_pres_prob = torch.empty(self.batch_size, 1, H, W).to(self.device)
@@ -63,6 +63,10 @@ class SPAIR(nn.Module):
         # s = torch.cuda.Stream()
         # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):
+
+        # TODO DELETE ME:
+        debug_cropped_images = torch.empty(self.batch_size, 1, *cfg.OBJECT_SHAPE, H, W)
+        # TODO DELETE ME END
         for h, w in itertools.product(range(H), range(W)):
 
 
@@ -80,7 +84,12 @@ class SPAIR(nn.Module):
             input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
             attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
             attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
-            z_attr[:, :, h, w, ] = attr
+            self.z_attr[:, :, h, w, ] = attr
+
+            # TODO DELETE ME
+            # debug_cropped_images[..., h, w] = input_glimpses
+            # self.writer.add_histogram('z_attr/%d_%d' % (h, w), z_attr[0, :, h, w, ], self.global_step)
+            # TODO END
 
             # --- depth ---
             layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
@@ -113,7 +122,10 @@ class SPAIR(nn.Module):
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
 
 
-
+        # TODO Delete me
+        # debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
+        debug_tools.plot_objet_attr_latent_representation(self.z_attr, self.writer, self.global_step)
+        # TODO END
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
@@ -125,7 +137,7 @@ class SPAIR(nn.Module):
 
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
 
-        recon_x = self._render(z_attr, z_where, z_depth, z_pres)
+        recon_x = self._render(self.z_attr, z_where, z_depth, z_pres, x)
 
         loss = self._build_loss(x, recon_x, kl_loss)
 
@@ -259,7 +271,8 @@ class SPAIR(nn.Module):
         pres = torch.nn.Sigmoid()(pres)
         depth = torch.nn.Sigmoid()(depth)
 
-        self.virtual_edge_element = torch.cat((loc, attr, depth, pres))
+        elem = torch.cat((loc, attr, depth, pres))
+        self.register_parameter('virtual_edge_element', nn.Parameter(elem))
 
     def _build_networks(self):
 
@@ -463,7 +476,7 @@ class SPAIR(nn.Module):
 
         return dist.rsample()
 
-    def _render(self, z_attr, z_where, z_depth, z_pres):
+    def _render(self, z_attr, z_where, z_depth, z_pres, x):
         '''
         decoder + renderer function. combines the latent vars & bbox, feed into the decoder for each object and then
         :param z_attr:
@@ -512,7 +525,7 @@ class SPAIR(nn.Module):
         objects = torch.cat([objects, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
 
         # TODO debug output image, remove me later
-        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, self.writer, self.global_step)
+        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, x, self.writer, self.global_step)
 
         # ---- exiting B x H x W x C realm .... ----
 

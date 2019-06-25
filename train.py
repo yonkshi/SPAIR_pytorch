@@ -40,20 +40,35 @@ def train():
     spair_optim = optim.Adam(params, lr=1e-4)
 
 
-    for global_step in range(100000):
+    for epoch in range(100000):
         dataloader = torch_data.DataLoader(data,
                                             batch_size=cfg.BATCH_SIZE,
                                            pin_memory=True,
                                            num_workers= 1,
                                            )
         for batch_idx, batch in enumerate(dataloader):
-            iteration = global_step * len(dataloader) + batch_idx
+            iteration = epoch * len(dataloader) + batch_idx
             batch = batch.to(DEVICE)
             print('Iteration', iteration)
             spair_optim.zero_grad()
             loss, out_img, z_where = spair_net(batch, iteration)
             loss.backward(retain_graph = True)
             spair_optim.step()
+
+            # TODO DELETE ME
+            decoder_params = spair_net.object_decoder.named_parameters()
+            for name, t in decoder_params:
+                writer.add_histogram('decoder/%s_grad' % name, t.grad, iteration)
+                writer.add_histogram('decoder/%s' % name, t, iteration)
+
+            encoder_params = spair_net.object_encoder.named_parameters()
+            for name, t in encoder_params:
+                writer.add_histogram('encoder/%s_grad' % name, t.grad, iteration)
+                writer.add_histogram('encoder/%s_grad' % name, t, iteration)
+            # TODO DELETE ME
+
+            writer.add_histogram('virtual_edge_element/element', spair_net.virtual_edge_element, iteration)
+            writer.add_histogram('virtual_edge_element/element_grad', spair_net.virtual_edge_element.grad, iteration)
 
             # logging stuff
             image_out = out_img[0]

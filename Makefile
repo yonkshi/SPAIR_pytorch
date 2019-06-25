@@ -10,7 +10,7 @@ run_gpu:
 	python3 train.py --gpu
 
 sync:
-	rsync -arvu -e ssh . naturalreaders:spair_pytorch
+	rsync -arvu --exclude=logs_v2/ -e ssh . naturalreaders:spair_pytorch
 
 tb:
-	tensorboard --logdir logs --host 0.0.0.0 --port 8081
+	tensorboard --logdir logs_v2/ --host 0.0.0.0 --port 8081
