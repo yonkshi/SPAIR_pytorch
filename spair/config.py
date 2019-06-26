@@ -30,8 +30,8 @@ N_CONTEXT_DIM = 4 + N_ATTRIBUTES + 1 + 1
 # Defines the range in which neighbouring cells are sampled to compute lateral context
 N_LOOKBACK = 1
 
-OBJECT_SHAPE = [14,14]
-ANCHORBOX_SHAPE = [48, 48]
+OBJECT_SHAPE = [4,4] # TODO 8 x 8
+ANCHORBOX_SHAPE = [4, 4] # TODO 48 x 48
 
 
 # Bounding box stuff, it's the maximum range relative to anchor box

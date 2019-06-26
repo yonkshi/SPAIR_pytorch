@@ -219,7 +219,7 @@ class SPAIR(nn.Module):
         # print('\n\np_z_given_Cz%d'%i, p_z_given_Cz, torch.isnan(p_z_given_Cz).sum())
         for h, w in itertools.product(range(H), range(W)):
 
-            p_z_given_Cz = torch.clamp(count_support - count_so_far, min=0., max=1.0) / (HW - i)
+            p_z_given_Cz = torch.clamp(count_support - count_so_far, min=0., max=(HW - i)) / (HW - i)
 
             # Reshape for batch matmul
             # Adds a new dim to to each vector for dot product [Batch, 50, ?]
@@ -400,8 +400,9 @@ class SPAIR(nn.Module):
         yt = (self.pixels_per_cell[0] / image_height) * (cell_y + h)
         xt = (self.pixels_per_cell[1] / image_width) * (cell_x + w)
 
-        yt -= ys / 2.
-        xt -= xs / 2.
+        # TODO Uncomment this after debugging attr
+        # yt -= ys / 2.
+        # xt -= xs / 2.
 
         normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
 
@@ -554,7 +555,7 @@ class SPAIR(nn.Module):
         input_chan = cfg.INPUT_IMAGE_SHAPE[0]
         color_channels  = transformed_objects[:, :, :input_chan, :, :]
         alpha = transformed_objects[:, :, input_chan:input_chan+1, :, :] # keep the empty dim
-        importance = transformed_objects[:,:, input_chan+1:input_chan+2, :, :]
+        importance = transformed_objects[:,:, input_chan+1:input_chan+2, :, :] + 1e-9
 
         img = alpha.expand_as(color_channels) * color_channels
 

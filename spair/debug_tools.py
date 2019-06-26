@@ -55,8 +55,8 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     # obj_vec = obj_vec.view(32, 11, 11, 28, 28, 3)
     obj_vec = torch2npy(obj_vec, reshape=True)
     obj_vec = obj_vec[0, ...]
-    obj_vec = np.concatenate(obj_vec, axis=-3) # concat h
-    obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
+    # obj_vec = np.concatenate(obj_vec, axis=-3) # concat h
+    # obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
     # z_pres = z_pres.view(32, 11, 11, 1)
     z_pres = torch2npy(z_pres, reshape=True)
     z_depth = torch2npy(z_depth, reshape=True)
@@ -85,12 +85,13 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     bbox = bounding_box[0, ...] * cfg.INPUT_IMAGE_SHAPE[-2] # image size
     _plot_bounding_boxes('bounding boxes', bbox, input_image, gs[1,0], fig)
 
-    # depth (heatmap)
-    depth = z_depth[0,...]
-    _plot_heatmap('z_depth', depth, gs[1, 1], fig, cmap='autumn')
-    # Presence (heatmap)
-    presence = z_pres[0,...]
-    _plot_heatmap('z_presence', presence, gs[1, 2], fig, cmap='winter')
+    # TODO Enable me
+    # # depth (heatmap)
+    # depth = z_depth[0,...]
+    # _plot_heatmap('z_depth', depth, gs[1, 1], fig, cmap='autumn')
+    # # Presence (heatmap)
+    # presence = z_pres[0,...]
+    # _plot_heatmap('z_presence', presence, gs[1, 2], fig, cmap='winter')
 
     if cfg.IS_LOCAL:
         plt.show()
@@ -173,12 +174,13 @@ def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
     ax = fig.add_subplot(gridspec)
     ax.imshow(original_image, cmap='gray', vmin=0, vmax=1)
     #ptchs = []
-    for rows in bbox:
-        for cols in rows:
-            x, y, w, h = cols
-            patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
-            #ptchs.append(patch)
-            ax.add_patch(patch)
+    # for rows in bbox:
+    #     for cols in rows:
+    #         x, y, w, h = cols
+    x, y, w, h = bbox
+    patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
+    #ptchs.append(patch)
+    ax.add_patch(patch)
 
 
     # ax.add_collection(PatchCollection(ptchs, facecolors='none', edgecolors='r', linewidths=1))
@@ -188,7 +190,7 @@ def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
 
 def decoder_output_grad_hook(grad, writer, step):
     obj_px = cfg.OBJECT_SHAPE[0]
-    grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2).cpu().squeeze().detach().numpy()
+    grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2).cpu().detach().numpy()
     grad = grad[0, ...]
     obj_vec = np.concatenate(grad, axis=-3) # concat h
     obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
