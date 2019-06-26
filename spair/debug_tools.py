@@ -9,9 +9,9 @@ import numpy as np
 import time
 
 from spair import config as cfg
-
+GRID_SIZE = 1 # TODO Originally 11
 def plot_torch_image_in_pyplot( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0):
-    ''' For visualizing '''
+    ''' For visualizing torch images in matplotlib '''
     torch_img = out[batch_n, ...]
     np_img = torch_img.detach().numpy()
     np_img = np.moveaxis(np_img,[0,1,2], [2,0,1]) # [C, H, W] -> [H, W, C]
@@ -47,7 +47,7 @@ def torch2npy(t:torch.Tensor, reshape=False):
     shape = t.shape[1:]
     # TODO Change batch size back
     if reshape:
-        return t.cpu().view(32, 11, 11, *shape).detach().squeeze().numpy()
+        return t.cpu().view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, *shape).detach().squeeze().numpy()
     return t.cpu().detach().numpy()
 
 def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_image, writer, step):
@@ -82,7 +82,7 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     _plot_heatmap('importance', impo, gs[0, 2], fig, cmap='summer')
 
     # Bounding Box
-    bbox = bounding_box[0, ...] * 128 # image size
+    bbox = bounding_box[0, ...] * cfg.INPUT_IMAGE_SHAPE[-2] # image size
     _plot_bounding_boxes('bounding boxes', bbox, input_image, gs[1,0], fig)
 
     # depth (heatmap)
@@ -151,7 +151,7 @@ def plot_debug_rendered_output(rendered, writer, step):
 
     pass
 
-def _plot_heatmap(title, data, gridspec, fig, cmap):
+def _plot_heatmap(title, data, gridspec, fig, cmap, vmin=0, vmax=1):
     ax = fig.add_subplot(gridspec)
     im = ax.imshow(data, cmap=cmap)
     # Disable axis
@@ -185,4 +185,50 @@ def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_title(title)
+
+def decoder_output_grad_hook(grad, writer, step):
+    obj_px = cfg.OBJECT_SHAPE[0]
+    grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2).cpu().squeeze().detach().numpy()
+    grad = grad[0, ...]
+    obj_vec = np.concatenate(grad, axis=-3) # concat h
+    obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
+    img = obj_vec[...,0]
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    im = ax.imshow(img, vmin=-1e-4, vmax=1e-4)
+    plt.title('gradient of decoder')
+    fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
+
+    if cfg.IS_LOCAL:
+        plt.show()
+        print('')
+    else:
+        writer.add_figure('grad_visualization/decoder_out', fig, step)
+
+def decoder_grad_hook(grad, writer, step):
+    print('hello')
+
+def z_attr_grad_hook(grad, writer, step):
+    # grad = grad.view(2, cfg.N_ATTRIBUTES, 11, 11, 2).squeeze().detach().numpy()
+    z_attr_grad = torch2npy(grad[0, ...])
+
+    gs = gridspec.GridSpec(1, 3)
+    fig = plt.figure(figsize = (7,2.5))
+    fig.tight_layout()
+    plt.tight_layout()
+
+    z_attr_max = z_attr_grad.max(axis=0)
+    _plot_heatmap('Max', z_attr_max, gs[0, 0], fig, cmap='spring')
+
+    z_attr_mean = z_attr_grad.mean(axis=0)
+    _plot_heatmap('Mean', z_attr_mean, gs[0, 1], fig, cmap='spring')
+
+    z_attr_min = z_attr_grad.min(axis=0)
+    _plot_heatmap('Min', z_attr_min, gs[0, 2], fig, cmap='spring')
+
+    if cfg.IS_LOCAL:
+        plt.show()
+        print('')
+    else:
+        writer.add_figure('grad_visualization/z_attr', fig, step)
 

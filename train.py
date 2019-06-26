@@ -37,7 +37,7 @@ def train():
     spair_net = SPAIR(image_shape, writer, DEVICE).to(DEVICE)
 
     params = spair_net.parameters()
-    spair_optim = optim.Adam(params, lr=1e-4)
+    spair_optim = optim.Adam(params, lr=1e-4) # TODO 1e-4
 
 
     for epoch in range(100000):
@@ -64,11 +64,8 @@ def train():
             encoder_params = spair_net.object_encoder.named_parameters()
             for name, t in encoder_params:
                 writer.add_histogram('encoder/%s_grad' % name, t.grad, iteration)
-                writer.add_histogram('encoder/%s_grad' % name, t, iteration)
+                writer.add_histogram('encoder/%s' % name, t, iteration)
             # TODO DELETE ME
-
-            writer.add_histogram('virtual_edge_element/element', spair_net.virtual_edge_element, iteration)
-            writer.add_histogram('virtual_edge_element/element_grad', spair_net.virtual_edge_element.grad, iteration)
 
             # logging stuff
             image_out = out_img[0]

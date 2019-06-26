@@ -257,9 +257,6 @@ def stn(image, z_where, output_dims, device, inverse=False):
         # convert theta to a square matrix to find inverse
         t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1).to(device)
         t = torch.cat([theta, t], dim=-2)
-        print('stn transform', t)
-        print('transformation contains nan?', torch.isnan(t).sum())
-        print('transformation shape', t.size() )
         t = t.inverse()
         theta = t[:, :2, :]
         out_dims = [batch_size, color_chans + 1] + output_dims  # [Batch, RGBA, obj_h, obj_w]

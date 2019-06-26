@@ -4,6 +4,7 @@ import numpy as np
 
 import torch
 from torch.utils import data
+import cv2
 
 
 class SimpleScatteredMNISTDataset(torch.utils.data.Dataset):
@@ -12,10 +13,15 @@ class SimpleScatteredMNISTDataset(torch.utils.data.Dataset):
         self.dataset = h5py.File(in_file, 'r')['test']
         self.episode = None
 
+        static_img = self.dataset[9, ...]
+        self.static_img = cv2.resize(static_img, dsize=(4,4))
+
     def __getitem__(self, index):
         ret = []
 
-        obs = self.dataset[0, ...] # TODO index fixed to 0
+        # obs = self.dataset[9, ...] # TODO index fixed to 0
+        obs = self.static_img
+        # obs = np.zeros_like(obs)
         obs = obs[..., None]  # Add channel dimension
         ret = np.moveaxis(obs, -1, 0)  # move from (x, y, c) to (c, x, y)
 

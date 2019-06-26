@@ -21,8 +21,6 @@ class SPAIR(nn.Module):
         self.B = 1 # TODO Change num bounding boxes
         self.device = device
 
-
-
         # context box dimension based on N_lookbacks
         # totalsize is n_lookback_cells * [localization, attribute, depth, presence] ~= 224
         self.context_dim = (cfg.N_LOOKBACK * 2 + 1 ) ** 2 // 2 * (4 + cfg.N_ATTRIBUTES + 1 + 1)
@@ -69,7 +67,6 @@ class SPAIR(nn.Module):
         # TODO DELETE ME END
         for h, w in itertools.product(range(H), range(W)):
 
-
             # feature vec for each cell in the grid
             cell_feat = feat[:, :, h, w]
 
@@ -87,6 +84,12 @@ class SPAIR(nn.Module):
             self.z_attr[:, :, h, w, ] = attr
 
             # TODO DELETE ME
+            # for name, t in self.object_decoder.named_parameters():
+            #     if name == 'out.weight':
+            #         t.register_hook(
+            #             lambda grad: debug_tools.decoder_grad_hook(grad, self.writer, self.global_step))
+
+                    # t.register_hook(lambda grad: self.writer.add_histogram('decoder_individual_grad/%d' % i , grad, self.global_step))
             # debug_cropped_images[..., h, w] = input_glimpses
             # self.writer.add_histogram('z_attr/%d_%d' % (h, w), z_attr[0, :, h, w, ], self.global_step)
             # TODO END
@@ -144,6 +147,40 @@ class SPAIR(nn.Module):
         # self._debug_logging(z_where, z_attr, z_pres, z_depth)
 
         return loss, recon_x, z_where
+
+    def _build_networks(self):
+
+        # backbone network
+        self.backbone = Backbone(self.image_shape, cfg.N_BACKBONE_FEATURES)
+        self.feature_space_dim = self.backbone.compute_output_shape()
+
+        n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
+        n_localization_latent = 8  # mean and var for (y, x, h, w)
+        n_backbone_features = self.feature_space_dim[0]
+
+        # bounding box
+        inputsize = n_backbone_features + self.context_dim
+        self.box_network = build_MLP(inputsize, multiple_output=(n_localization_latent, n_passthrough_features))
+
+        # object attribute
+        n_attr_out = 2 * cfg.N_ATTRIBUTES
+        obj_dim = cfg.OBJECT_SHAPE[0]
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
+        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
+
+        # object depth
+        z_inp_shape = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + self.context_dim + cfg.N_BACKBONE_FEATURES
+        self.z_network = build_MLP(z_inp_shape, multiple_output=(2, n_passthrough_features)) # For training pass through features
+
+        # object presence
+        obj_inp_shape = z_inp_shape + 1 # incorporated z_network out dim (1 dim)
+        self.obj_network = build_MLP(obj_inp_shape, 1)
+
+        # object decoder
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
+        self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
 
     def _compute_KL(self, z_pres, z_pres_prob):
         KL = {}
@@ -273,40 +310,6 @@ class SPAIR(nn.Module):
 
         elem = torch.cat((loc, attr, depth, pres))
         self.register_parameter('virtual_edge_element', nn.Parameter(elem))
-
-    def _build_networks(self):
-
-        # backbone network
-        self.backbone = Backbone(self.image_shape, cfg.N_BACKBONE_FEATURES)
-        self.feature_space_dim = self.backbone.compute_output_shape()
-
-        n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
-        n_localization_latent = 8  # mean and var for (y, x, h, w)
-        n_backbone_features = self.feature_space_dim[0]
-
-        # bounding box
-        inputsize = n_backbone_features + self.context_dim
-        self.box_network = build_MLP(inputsize, multiple_output=(n_localization_latent, n_passthrough_features))
-
-        # object attribute
-        n_attr_out = 2 * cfg.N_ATTRIBUTES
-        obj_dim = cfg.OBJECT_SHAPE[0]
-        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
-        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
-        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
-
-        # object depth
-        z_inp_shape = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + self.context_dim + cfg.N_BACKBONE_FEATURES
-        self.z_network = build_MLP(z_inp_shape, multiple_output=(2, n_passthrough_features)) # For training pass through features
-
-        # object presence
-        obj_inp_shape = z_inp_shape + 1 # incorporated z_network out dim (1 dim)
-        self.obj_network = build_MLP(obj_inp_shape, 1)
-
-        # object decoder
-        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
-        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
-        self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
 
     def _get_sequential_context(self, context_mat:dict, h, w, edge_element):
 
@@ -502,14 +505,20 @@ class SPAIR(nn.Module):
 
         # MLP to generate image
         object_logits = self.object_decoder(object_decoder_in)
+
+
         input_chan_w_alpha = cfg.INPUT_IMAGE_SHAPE[0] + 1
         object_logits = object_logits.view(-1, px, px, input_chan_w_alpha) # [Batch * n_cells, pixels_w, pixels_h, channels]
+
 
         # object_logits scale + bias mask
         object_logits[:, :, :, :-1] *= cfg.OBJ_LOGIT_SCALE  #[B, 14, 14, 4] * [4]
         object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
-
+        # TODO DELETE ME
+        z_attr.register_hook(lambda grad: debug_tools.z_attr_grad_hook(grad, self.writer, self.global_step))
+        object_logits.register_hook(lambda grad: debug_tools.decoder_output_grad_hook(grad, self.writer, self.global_step))
+        # TODO END DELETE ME
         objects = clamped_sigmoid(object_logits, use_analytical=True)
         objects = objects.view(-1, px, px, input_chan_w_alpha)
 
@@ -568,6 +577,8 @@ class SPAIR(nn.Module):
         # KL loss with Beta factor
         kl_loss = 0
         for name, z_kl in kl.items():
+            if name != 'attr':
+                continue
             kl_mean = torch.mean(torch.sum(z_kl, dim=[1,2,3])) # batch mean
             kl_loss += kl_mean
             print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
@@ -621,6 +632,66 @@ class SPAIR(nn.Module):
         self.writer.add_scalar('z_depth/min', z_depth_np.min(), self.global_step)
         print('========= end of debugging info  ======================')
 
+class ObjectConvEncoder(nn.Module):
+
+    def __init__(self, input_size, output_size):
+        super().__init__()
+        n_prev, h, w = input_size
+        net = OrderedDict()
+
+        # Builds internal layers except for the last layer
+        for i, layer in enumerate(cfg.CONV_OBJECT_ENCODER_TOPOLOGY):
+            layer['in_channels'] = n_prev
+
+            if 'filters' in layer.keys():
+                f = layer.pop('filters')
+                layer['out_channels'] = f #rename
+            else:
+                f = layer['out_channels']
+
+            net['conv_%d' % i] = Conv2d(**layer)
+            net['act_%d' % i] = ReLU()
+            n_prev = f
+
+        self.conv = Sequential(net)
+        self.out = nn.Linear(123, output_size)
+
+    def forward(self, x):
+        conv_out = self.conv(x)
+        conv_out_flat = conv_out.flatten(start_dim=1)
+        return self.linear(conv_out_flat)
+
+class ObjectConvDecoder(nn.Module):
+
+    def __init__(self, input_size, output_channel):
+        super().__init__()
+        n_prev = input_size
+        net = OrderedDict()
+        decoder_topo = cfg.CONV_OBJECT_ENCODER_TOPOLOGY.reverse()
+        # Builds internal layers except for the last layer
+        for i, layer in enumerate(decoder_topo):
+            layer['in_channels'] = n_prev
+
+            if 'filters' in layer.keys():
+                f = layer.pop('filters')
+                layer['out_channels'] = f #rename
+            else:
+                f = layer['out_channels']
+
+            net['conv_transposed_%d' % i] = nn.ConvTranspose2d(**layer)
+
+            net['act_%d' % i] = ReLU()
+            n_prev = f
+        net.pop()
+
+        self.conv = Sequential(net)
+
+
+    def forward(self, x):
+        conv_out = torch.tensor(self.conv(x) )
+        conv_out_flat = conv_out.flatten(start_dim=1)
+
+        return self.linear(conv_out_flat)
 
 
 
