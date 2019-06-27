@@ -31,7 +31,7 @@ N_CONTEXT_DIM = 4 + N_ATTRIBUTES + 1 + 1
 N_LOOKBACK = 1
 
 OBJECT_SHAPE = [28,28]
-ANCHORBOX_SHAPE = [28, 28] # TODO 48 x 48
+ANCHORBOX_SHAPE = [48, 48] # TODO 48 x 48
 
 
 # Bounding box stuff, it's the maximum range relative to anchor box
@@ -57,7 +57,7 @@ VAE_BETA = 1
 # training wheels
 LATENT_VAR_TRAINING_WHEEL_PARAM = dict(start = 1.0, # 1.0
                                        end = 0.0,
-                                       decay_rate = 0.9,
+                                       decay_rate = 0.0,
                                        decay_step = 1000.,
                                        staircase = True)
 

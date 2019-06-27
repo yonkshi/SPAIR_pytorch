@@ -33,6 +33,7 @@ class SPAIR(nn.Module):
         print('model initialized')
 
     def forward(self, x, global_step = 0):
+        debug_tools.benchmark_init()
         # feature space
         _, H, W = self.feature_space_dim
         feat = self.backbone(x)
@@ -63,7 +64,8 @@ class SPAIR(nn.Module):
         # with torch.cuda.stream(s):
 
         # TODO DELETE ME:
-        debug_cropped_images = torch.empty(self.batch_size, 1, *cfg.OBJECT_SHAPE, H, W)
+        # debug_cropped_images = torch.empty(self.batch_size, 1, *cfg.OBJECT_SHAPE, H, W)
+        debug_tools.benchmark('feature extraction')
         # TODO DELETE ME END
         for h, w in itertools.product(range(H), range(W)):
 
@@ -71,7 +73,6 @@ class SPAIR(nn.Module):
             cell_feat = feat[:, :, h, w]
 
             context = self._get_sequential_context(context_mat, h,w, edge_element)
-
             # --- box ---
             layer_inp = torch.cat((cell_feat, context), dim=-1)
             rep_input, passthru_features = self.box_network(layer_inp)
@@ -82,18 +83,6 @@ class SPAIR(nn.Module):
             attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
             attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
             z_attr[:, :, h, w, ] = attr
-
-            # TODO DELETE ME
-            # for name, t in self.object_decoder.named_parameters():
-            #     if name == 'out.weight':
-            #         t.register_hook(
-            #             lambda grad: debug_tools.decoder_grad_hook(grad, self.writer, self.global_step))
-
-                    # t.register_hook(lambda grad: self.writer.add_histogram('decoder_individual_grad/%d' % i , grad, self.global_step))
-            debug_cropped_images[..., h, w] = input_glimpses
-            # self.writer.add_histogram('z_attr/%d_%d' % (h, w), z_attr[0, :, h, w, ], self.global_step)
-            # TODO END
-
             # --- depth ---
             layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
 
@@ -104,9 +93,6 @@ class SPAIR(nn.Module):
 
             depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
             depth = 4 * clamped_sigmoid(depth_logits)
-            # TODO DELETE ME
-            depth = torch.ones_like(depth)
-            # TODO END
             z_depth[:,:, h, w] = depth
 
             # --- presence ---
@@ -114,20 +100,15 @@ class SPAIR(nn.Module):
             pres_logit = self.obj_network(layer_inp)
             obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
 
-            # TODO DELETE ME
-            obj_pres = torch.ones_like(obj_pres)
-            obj_pres_prob = torch.ones_like(obj_pres_prob)
-            # TODO END
-
             z_pres[:,:, h,w] = obj_pres
             z_pres_prob[:, :, h, w] = obj_pres_prob
-
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
 
 
         # TODO Delete me
-        debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
-        debug_tools.plot_objet_attr_latent_representation(z_attr, self.writer, self.global_step)
+        debug_tools.benchmark('main loop')
+        # debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
+        # debug_tools.plot_objet_attr_latent_representation(z_attr, self.writer, self.global_step)
         # TODO END
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
@@ -137,13 +118,13 @@ class SPAIR(nn.Module):
         # if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
         # if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
 
-
+        debug_tools.benchmark('merge distributions')
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
-
+        debug_tools.benchmark('KL computation')
         recon_x = self._render(z_attr, z_where, z_depth, z_pres, x)
-
+        debug_tools.benchmark('rendering image')
         loss = self._build_loss(x, recon_x, kl_loss)
-
+        debug_tools.benchmark('computing loss')
         # self._debug_logging(z_where, z_attr, z_pres, z_depth)
 
         return loss, recon_x, z_where
@@ -369,22 +350,17 @@ class SPAIR(nn.Module):
         cell_x = float(max_yx - min_yx) * cell_x + min_yx
 
         # --- height/width transform ---
+        # hw ~ [0.0 , 1.0]
         height = clamped_sigmoid(height_logits)
         width = clamped_sigmoid(width_logits)
         max_hw = cfg.MAX_HW
         min_hw = cfg.MIN_HW
         assert max_hw > min_hw
-        # hw ~ [0.0 , 1.0]
+
         # current bounding box height & width ratio to anchor box
         height = float(max_hw - min_hw) * height + min_hw
         width = float(max_hw - min_hw) * width + min_hw
 
-        # TODO Debugging bounding box
-        cell_y = torch.zeros_like(cell_y)
-        cell_x = torch.zeros_like(cell_x)
-        height = torch.ones_like(height)
-        width  = torch.ones_like(width)
-        # TODO end debugging
         box = torch.cat([cell_x, cell_y, width, height], dim=-1)
 
         # --- Compute image-normalized box parameters ---
@@ -396,13 +372,9 @@ class SPAIR(nn.Module):
         ys = height * anchor_box_dim / image_height
         xs = width * anchor_box_dim / image_width
 
-        # box centre normalized to image height and width
+        # box centre mapped with respect to full image
         yt = (self.pixels_per_cell[0] / image_height) * (cell_y + h)
         xt = (self.pixels_per_cell[1] / image_width) * (cell_x + w)
-
-        # TODO Uncomment this after debugging attr
-        # yt -= ys / 2.
-        # xt -= xs / 2.
 
         normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
 
@@ -567,6 +539,9 @@ class SPAIR(nn.Module):
 
         output_image = weighted_grads_image.sum(dim=1) # sum up along n_obj per image
 
+        # Fix numerical issue
+        output_image = torch.clamp(output_image, min=0, max=1)
+
         return output_image
 
     def _build_loss(self, x, recon_x, kl):
@@ -578,8 +553,6 @@ class SPAIR(nn.Module):
         # KL loss with Beta factor
         kl_loss = 0
         for name, z_kl in kl.items():
-            if name != 'attr':
-                continue
             kl_mean = torch.mean(torch.sum(z_kl, dim=[1,2,3])) # batch mean
             kl_loss += kl_mean
             print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))

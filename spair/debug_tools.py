@@ -31,12 +31,13 @@ def benchmark_init():
     global BENCHMARK_INIT_TIME
     BENCHMARK_INIT_TIME = time.time()
 
-def benchmark(name=''):
+def benchmark(name='', print_benchmark=True):
     global BENCHMARK_INIT_TIME
     now = time.time()
     diff = now - BENCHMARK_INIT_TIME
     BENCHMARK_INIT_TIME = now
-    print('{}: {:.4f} '.format(name, diff))
+    if print_benchmark: print('{}: {:.4f} '.format(name, diff))
+    return diff
 
 def torch2npy(t:torch.Tensor, reshape=False):
     '''
@@ -45,12 +46,15 @@ def torch2npy(t:torch.Tensor, reshape=False):
     :return:
     '''
     shape = t.shape[1:]
-    # TODO Change batch size back
     if reshape:
         return t.cpu().view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, *shape).detach().squeeze().numpy()
     return t.cpu().detach().numpy()
 
 def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_image, writer, step):
+
+    if step % 50 != 0:
+        return
+
     ''' Plots each component prior to rendering '''
     # obj_vec = obj_vec.view(32, 11, 11, 28, 28, 3)
     obj_vec = torch2npy(obj_vec, reshape=True)
@@ -85,13 +89,12 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     bbox = bounding_box[0, ...] * cfg.INPUT_IMAGE_SHAPE[-2] # image size
     _plot_bounding_boxes('bounding boxes', bbox, input_image, gs[1,0], fig)
 
-    # TODO Enable me
-    # # depth (heatmap)
-    # depth = z_depth[0,...]
-    # _plot_heatmap('z_depth', depth, gs[1, 1], fig, cmap='autumn')
-    # # Presence (heatmap)
-    # presence = z_pres[0,...]
-    # _plot_heatmap('z_presence', presence, gs[1, 2], fig, cmap='winter')
+    # depth (heatmap)
+    depth = z_depth[0,...]
+    _plot_heatmap('z_depth', depth, gs[1, 1], fig, cmap='autumn')
+    # Presence (heatmap)
+    presence = z_pres[0,...]
+    _plot_heatmap('z_presence', presence, gs[1, 2], fig, cmap='winter')
 
     if cfg.IS_LOCAL:
         plt.show()
@@ -148,9 +151,6 @@ def plot_objet_attr_latent_representation(z_attr, writer, step, title='z_attr/he
     else:
         writer.add_figure(title, fig, step)
 
-def plot_debug_rendered_output(rendered, writer, step):
-
-    pass
 
 def _plot_heatmap(title, data, gridspec, fig, cmap, vmin=0, vmax=1):
     ax = fig.add_subplot(gridspec)
@@ -171,12 +171,15 @@ def _plot_image(title, data, gridspec, fig):
         ax.set_title(title)
 
 def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
+
     ax = fig.add_subplot(gridspec)
     ax.imshow(original_image, cmap='gray', vmin=0, vmax=1)
     #ptchs = []
     for rows in bbox:
         for cols in rows:
             x, y, w, h = cols
+            x -= w/2
+            y -= h/2
             patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
             ax.add_patch(patch)
 
@@ -186,6 +189,8 @@ def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
     ax.set_title(title)
 
 def decoder_output_grad_hook(grad, writer, step):
+    if step % 50 != 0:
+        return
     obj_px = cfg.OBJECT_SHAPE[0]
     grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2).cpu().detach().numpy()
     grad = grad[0, ...]
@@ -204,10 +209,9 @@ def decoder_output_grad_hook(grad, writer, step):
     else:
         writer.add_figure('grad_visualization/decoder_out', fig, step)
 
-def decoder_grad_hook(grad, writer, step):
-    print('hello')
-
 def z_attr_grad_hook(grad, writer, step):
+    if step % 50 != 0:
+        return
     # grad = grad.view(2, cfg.N_ATTRIBUTES, 11, 11, 2).squeeze().detach().numpy()
     z_attr_grad = torch2npy(grad[0, ...])
 

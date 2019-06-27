@@ -150,7 +150,7 @@ def build_MLP(n_in, output=None,
 
     # Output is singular
     if output is not None:
-        net['out'] = Linear(n_prev, output, bias=False) # TODO Remove bias
+        net['out'] = Linear(n_prev, output)
         if activation is not None:
             net['act'] = activation()
         return Sequential(net)
@@ -240,8 +240,8 @@ def stn(image, z_where, output_dims, device, inverse=False):
     out_dims = [batch_size, color_chans] + output_dims # [Batch, RGB, obj_h, obj_w]
 
     # Important: in order for scaling to work, we need to convert from top left corner of bbox to center of bbox
-    yt = (yt + (ys / 2)) * 2 - 1
-    xt = (xt + (xs / 2)) * 2 - 1
+    yt = (yt ) * 2 - 1
+    xt = (xt ) * 2 - 1
 
     theta = torch.zeros(2, 3).repeat(batch_size, 1, 1).to(device)
 
