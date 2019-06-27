@@ -37,7 +37,7 @@ def train():
     spair_net = SPAIR(image_shape, writer, DEVICE).to(DEVICE)
 
     params = spair_net.parameters()
-    spair_optim = optim.Adam(params, lr=1e-4) # TODO 1e-4
+    spair_optim = optim.Adam(params, lr=1e-4)
 
 
     for epoch in range(100000):
@@ -54,18 +54,6 @@ def train():
             loss, out_img, z_where = spair_net(batch, iteration)
             loss.backward(retain_graph = True)
             spair_optim.step()
-
-            # TODO DELETE ME
-            decoder_params = spair_net.object_decoder.named_parameters()
-            for name, t in decoder_params:
-                writer.add_histogram('decoder/%s_grad' % name, t.grad, iteration)
-                writer.add_histogram('decoder/%s' % name, t, iteration)
-
-            encoder_params = spair_net.object_encoder.named_parameters()
-            for name, t in encoder_params:
-                writer.add_histogram('encoder/%s_grad' % name, t.grad, iteration)
-                writer.add_histogram('encoder/%s' % name, t, iteration)
-            # TODO DELETE ME
 
             # logging stuff
             image_out = out_img[0]

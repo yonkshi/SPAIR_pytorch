@@ -9,7 +9,7 @@ import numpy as np
 import time
 
 from spair import config as cfg
-GRID_SIZE = 1 # TODO Originally 11
+GRID_SIZE = 11
 def plot_torch_image_in_pyplot( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0):
     ''' For visualizing torch images in matplotlib '''
     torch_img = out[batch_n, ...]
@@ -55,8 +55,8 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     # obj_vec = obj_vec.view(32, 11, 11, 28, 28, 3)
     obj_vec = torch2npy(obj_vec, reshape=True)
     obj_vec = obj_vec[0, ...]
-    # obj_vec = np.concatenate(obj_vec, axis=-3) # concat h
-    # obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
+    obj_vec = np.concatenate(obj_vec, axis=-3) # concat h
+    obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
     # z_pres = z_pres.view(32, 11, 11, 1)
     z_pres = torch2npy(z_pres, reshape=True)
     z_depth = torch2npy(z_depth, reshape=True)
@@ -174,14 +174,11 @@ def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
     ax = fig.add_subplot(gridspec)
     ax.imshow(original_image, cmap='gray', vmin=0, vmax=1)
     #ptchs = []
-    # for rows in bbox:
-    #     for cols in rows:
-    #         x, y, w, h = cols
-    x, y, w, h = bbox
-    patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
-    #ptchs.append(patch)
-    ax.add_patch(patch)
-
+    for rows in bbox:
+        for cols in rows:
+            x, y, w, h = cols
+            patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
+            ax.add_patch(patch)
 
     # ax.add_collection(PatchCollection(ptchs, facecolors='none', edgecolors='r', linewidths=1))
     ax.set_xticks([])

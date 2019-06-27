@@ -49,7 +49,7 @@ class SPAIR(nn.Module):
         context_mat = {}
 
         z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
-        self.z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
+        z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
         z_depth = torch.empty(self.batch_size, 1, H, W).to(self.device)
         z_pres = torch.empty(self.batch_size, 1, H, W).to(self.device)
         z_pres_prob = torch.empty(self.batch_size, 1, H, W).to(self.device)
@@ -81,7 +81,7 @@ class SPAIR(nn.Module):
             input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
             attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
             attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
-            self.z_attr[:, :, h, w, ] = attr
+            z_attr[:, :, h, w, ] = attr
 
             # TODO DELETE ME
             # for name, t in self.object_decoder.named_parameters():
@@ -90,7 +90,7 @@ class SPAIR(nn.Module):
             #             lambda grad: debug_tools.decoder_grad_hook(grad, self.writer, self.global_step))
 
                     # t.register_hook(lambda grad: self.writer.add_histogram('decoder_individual_grad/%d' % i , grad, self.global_step))
-            # debug_cropped_images[..., h, w] = input_glimpses
+            debug_cropped_images[..., h, w] = input_glimpses
             # self.writer.add_histogram('z_attr/%d_%d' % (h, w), z_attr[0, :, h, w, ], self.global_step)
             # TODO END
 
@@ -126,8 +126,8 @@ class SPAIR(nn.Module):
 
 
         # TODO Delete me
-        # debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
-        debug_tools.plot_objet_attr_latent_representation(self.z_attr, self.writer, self.global_step)
+        debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
+        debug_tools.plot_objet_attr_latent_representation(z_attr, self.writer, self.global_step)
         # TODO END
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
@@ -140,7 +140,7 @@ class SPAIR(nn.Module):
 
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
 
-        recon_x = self._render(self.z_attr, z_where, z_depth, z_pres, x)
+        recon_x = self._render(z_attr, z_where, z_depth, z_pres, x)
 
         loss = self._build_loss(x, recon_x, kl_loss)
 
@@ -572,7 +572,7 @@ class SPAIR(nn.Module):
     def _build_loss(self, x, recon_x, kl):
         print('============ Losses =============')
         # Reconstruction loss
-        recon_loss = F.binary_cross_entropy(recon_x, x,) # recon loss
+        recon_loss = F.binary_cross_entropy(recon_x, x, reduction='sum')
         self.writer.add_scalar('losses/reconst', recon_loss, self.global_step)
         print('Reconstruction loss:', '{:.4f}'.format(recon_loss.item()))
         # KL loss with Beta factor

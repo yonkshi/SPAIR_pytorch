@@ -1,7 +1,7 @@
 import os
 
 BATCH_SIZE = 2
-INPUT_IMAGE_SHAPE = [1, 4, 4] # originally 128 128 TODO change me back
+INPUT_IMAGE_SHAPE = [1, 128, 128] # originally 128 128 TODO change me back
 
 DEFAULT_MLP_TOPOLOGY = [100, 100]
 DEFAULT_BACKBONE_TOPOLOGY = [
@@ -30,8 +30,8 @@ N_CONTEXT_DIM = 4 + N_ATTRIBUTES + 1 + 1
 # Defines the range in which neighbouring cells are sampled to compute lateral context
 N_LOOKBACK = 1
 
-OBJECT_SHAPE = [4,4] # TODO 8 x 8
-ANCHORBOX_SHAPE = [4, 4] # TODO 48 x 48
+OBJECT_SHAPE = [28,28]
+ANCHORBOX_SHAPE = [28, 28] # TODO 48 x 48
 
 
 # Bounding box stuff, it's the maximum range relative to anchor box

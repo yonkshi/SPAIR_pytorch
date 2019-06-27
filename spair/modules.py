@@ -150,7 +150,7 @@ def build_MLP(n_in, output=None,
 
     # Output is singular
     if output is not None:
-        net['out'] = Linear(n_prev, output)
+        net['out'] = Linear(n_prev, output, bias=False) # TODO Remove bias
         if activation is not None:
             net['act'] = activation()
         return Sequential(net)
