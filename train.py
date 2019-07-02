@@ -31,7 +31,7 @@ def train():
     image_shape = cfg.INPUT_IMAGE_SHAPE
 
     # Test image setup
-    data = SimpleScatteredMNISTDataset('spair/data/scattered_mnist.hdf5')
+    data = SimpleScatteredMNISTDataset('spair/data/scattered_mnist_14x14.hdf5')
     torch.manual_seed(3)
 
     spair_net = SPAIR(image_shape, writer, DEVICE).to(DEVICE)

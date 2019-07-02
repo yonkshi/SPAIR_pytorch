@@ -20,7 +20,7 @@ class SimpleScatteredMNISTDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         ret = []
 
-        obs = self.dataset[9, ...] # TODO index fixed to 0
+        obs = self.dataset[index, ...] # TODO index fixed to 0
         # obs = self.static_img
         # obs = np.zeros_like(obs)
         obs = obs[..., None]  # Add channel dimension
