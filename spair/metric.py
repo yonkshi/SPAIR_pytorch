@@ -46,6 +46,14 @@ def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
     mean_ap = mean_ap.mean()
     return mean_ap
 
+def object_count_accuracy(z_pres:torch.Tensor, truth_bbox_digit_count):
+
+    batch_size = cfg.BATCH_SIZE
+    z_pres = z_pres.permute(0, 2, 3, 1).contiguous().view(batch_size, -1, 1)
+    z_pres_count = z_pres.round().sum(dim = -2)
+
+    count_accuracy = (truth_bbox_digit_count - z_pres_count).mean()
+    return count_accuracy
 
 
 def intersect(box_a, box_b):

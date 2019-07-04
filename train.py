@@ -1,6 +1,6 @@
 from datetime import datetime
 import argparse
-
+import os
 import numpy as np
 import cv2
 import torch
@@ -17,7 +17,9 @@ from spair import metric
 
 
 dt = datetime.today().strftime('%b-%d') + '-' + generate_slug(2)
-writer = SummaryWriter('logs_v2/%s' % dt)
+run_log_path = 'logs_v2/%s' % dt
+writer = SummaryWriter(run_log_path)
+print('log path:', run_log_path)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', help='Enable GPU use', action='store_true')
@@ -76,6 +78,16 @@ def train():
                 print('Bbox Average Precision:', meanAP.item())
                 writer.add_scalar('accuracy/bbox_average_precision', meanAP, iteration)
 
+                count_accuracy = metric.object_count_accuracy(z_pres, y_digit_count)
+                writer.add_scalar('accuracy/object_count_accuracy', count_accuracy, iteration)
+
+            # Save model
+            if iteration >= 1000 and iteration % 1000 == 0:
+                check_point_name = 'step_%d.pkl' % iteration
+                cp_dir = os.path.join(run_log_path, 'checkpoints')
+                os.makedirs(cp_dir, exist_ok=True)
+                save_path = os.path.join(run_log_path, 'checkpoints', check_point_name)
+                torch.save(spair_net.state_dict(), save_path)
             print('=================\n\n')
             torch.cuda.empty_cache()
 

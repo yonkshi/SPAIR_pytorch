@@ -63,6 +63,8 @@ class SPAIR(nn.Module):
         # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):
         debug_tools.nan_hunter('Before Main Loop', edge_element = edge_element, backbone_feature = feat, global_step = self.global_step,)
+        test_context = torch.empty(self.batch_size, 55, H, W).to(self.device)
+
         for h, w in itertools.product(range(H), range(W)):
 
             # feature vec for each cell in the grid
@@ -102,7 +104,7 @@ class SPAIR(nn.Module):
             z_pres[:,:, h,w] = obj_pres
             z_pres_prob[:, :, h, w] = obj_pres_prob
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
-
+            test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
             debug_tools.nan_hunter('Main Loop',
                                     global_step = self.global_step,
                                     grid_h=h,
@@ -115,6 +117,7 @@ class SPAIR(nn.Module):
                                    )
 
 
+        self.attn(test_context)
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
@@ -160,6 +163,8 @@ class SPAIR(nn.Module):
         input_chan = cfg.INPUT_IMAGE_SHAPE[0]
         decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
         self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
+
+        self.attn = Self_Attn(55)
 
     def _compute_KL(self, z_pres, z_pres_prob):
         KL = {}
@@ -662,10 +667,9 @@ class ObjectConvDecoder(nn.Module):
 class Self_Attn(nn.Module):
     """ Self attention Layer"""
 
-    def __init__(self, in_dim, activation):
+    def __init__(self, in_dim):
         super(Self_Attn, self).__init__()
         self.chanel_in = in_dim
-        self.activation = activation
 
         self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
         self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
@@ -692,7 +696,6 @@ class Self_Attn(nn.Module):
         out = torch.bmm(proj_value, attention.permute(0, 2, 1))
         out = out.view(m_batchsize, C, width, height)
 
-        out = self.gamma * out + x
         return out, attention
 
 
