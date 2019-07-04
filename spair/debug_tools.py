@@ -87,13 +87,14 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
 
     # Bounding Box
     bbox = bounding_box[0, ...] * cfg.INPUT_IMAGE_SHAPE[-2] # image size
-    _plot_bounding_boxes('bounding boxes', bbox, input_image, gs[1,0], fig)
+    presence = z_pres[0, ...]
+    _plot_bounding_boxes('bounding boxes', bbox, input_image, presence,  gs[1,0], fig)
 
     # depth (heatmap)
     depth = z_depth[0,...]
     _plot_heatmap('z_depth', depth, gs[1, 1], fig, cmap='autumn')
     # Presence (heatmap)
-    presence = z_pres[0,...]
+
     _plot_heatmap('z_presence', presence, gs[1, 2], fig, cmap='winter')
 
     if cfg.IS_LOCAL:
@@ -170,17 +171,23 @@ def _plot_image(title, data, gridspec, fig):
     if title:
         ax.set_title(title)
 
-def _plot_bounding_boxes(title, bbox, original_image, gridspec, fig):
+def _plot_bounding_boxes(title, bbox, original_image, z_pres, gridspec, fig):
 
     ax = fig.add_subplot(gridspec)
     ax.imshow(original_image, cmap='gray', vmin=0, vmax=1)
     #ptchs = []
-    for rows in bbox:
-        for cols in rows:
-            x, y, w, h = cols
+    H, W, _ = bbox.shape
+    for i in range(H):
+        for j in range(W):
+            x, y, w, h = bbox[i,j]
+            pres = np.clip(z_pres[i, j], 0.2, 1)
+            border_color = (1,0,0,pres) if pres > 0.5 else (0,0,1, pres)# red box if > 0.5, otherwise blue
+
+            # Green box: ground truth, red box: inferrence, blue box: disabled inferrence
+
             x -= w/2
             y -= h/2
-            patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor='r', linewidth=1)
+            patch = patches.Rectangle([x,y], w, h, facecolor='none', edgecolor=border_color, linewidth=1)
             ax.add_patch(patch)
 
     # ax.add_collection(PatchCollection(ptchs, facecolors='none', edgecolors='r', linewidths=1))
@@ -234,4 +241,35 @@ def z_attr_grad_hook(grad, writer, step):
         print('')
     else:
         writer.add_figure('grad_visualization/z_attr', fig, step)
+
+def nan_hunter(name, **kwargs):
+
+    nan_detected = False
+    tensors = {}
+    non_tensors = {}
+    for name, value in kwargs.items():
+        if isinstance(value, torch.Tensor):
+            tensors[name] = value
+            if torch.isnan(value).sum() > 0:
+                nan_detected = True
+        else:
+            non_tensors[name] = value
+
+    if not nan_detected: return
+
+
+    print('======== NAN DETECTED in %s =======' % name)
+
+    for name, value in non_tensors.items():
+        print(name, ":", value)
+
+    for name, tensor in tensors.items():
+        print(name, ':\n', tensor)
+
+    print('======== END OF NAN DETECTED =======')
+
+    raise AssertionError('NAN Detected by Nan detector')
+
+
+
 

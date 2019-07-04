@@ -62,28 +62,27 @@ class SPAIR(nn.Module):
         # s = torch.cuda.Stream()
         # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):
-
-        # TODO DELETE ME:
-        # debug_cropped_images = torch.empty(self.batch_size, 1, *cfg.OBJECT_SHAPE, H, W)
-        debug_tools.benchmark('feature extraction')
-        # TODO DELETE ME END
+        debug_tools.nan_hunter('Before Main Loop', edge_element = edge_element, backbone_feature = feat, global_step = self.global_step,)
         for h, w in itertools.product(range(H), range(W)):
 
             # feature vec for each cell in the grid
             cell_feat = feat[:, :, h, w]
 
             context = self._get_sequential_context(context_mat, h,w, edge_element)
-            # --- box ---
+
+            # --- z_where ---
             layer_inp = torch.cat((cell_feat, context), dim=-1)
             rep_input, passthru_features = self.box_network(layer_inp)
             box, normalized_box = self._build_box(rep_input, h, w)
             z_where[:, :, h, w,] = normalized_box
-            # --- attr ---
+
+            # --- z_what ---
             input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
             attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
             attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
             z_attr[:, :, h, w, ] = attr
-            # --- depth ---
+
+            # --- z_depth ---
             layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
 
             depth_latent, passthru_features = self.z_network(layer_inp)
@@ -95,7 +94,7 @@ class SPAIR(nn.Module):
             depth = 4 * clamped_sigmoid(depth_logits)
             z_depth[:,:, h, w] = depth
 
-            # --- presence ---
+            # --- z_presence ---
             layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
             pres_logit = self.obj_network(layer_inp)
             obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
@@ -104,30 +103,29 @@ class SPAIR(nn.Module):
             z_pres_prob[:, :, h, w] = obj_pres_prob
             context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
 
+            debug_tools.nan_hunter('Main Loop',
+                                    global_step = self.global_step,
+                                    grid_h=h,
+                                    grid_w = w,
+                                   context=context,
+                                   normalized_box = normalized_box,
+                                   attr = attr,
+                                   depth=depth,
+                                   presence = obj_pres
+                                   )
 
-        # TODO Delete me
-        debug_tools.benchmark('main loop')
-        # debug_tools.plot_cropped_input_images(debug_cropped_images, self.writer, self.global_step)
-        # debug_tools.plot_objet_attr_latent_representation(z_attr, self.writer, self.global_step)
-        # TODO END
+
         # Merge dist param, we have to use loop or autograd might not work
         for dist_name, dist_params in self.dist_param.items():
             means = self.dist_param[dist_name]['mean']
             sigmas = self.dist_param[dist_name]['sigma']
             self.dist[dist_name] = Normal(loc=means, scale=sigmas)
-        # if torch.isnan(z_pres).sum(): print('!!! !!! there is nan in z_pres')
-        # if torch.isnan(z_pres_prob).sum(): print('!!! !!! there is nan in z_pres_prob')
 
-        debug_tools.benchmark('merge distributions')
         kl_loss = self._compute_KL(z_pres, z_pres_prob)
-        debug_tools.benchmark('KL computation')
         recon_x = self._render(z_attr, z_where, z_depth, z_pres, x)
-        debug_tools.benchmark('rendering image')
         loss = self._build_loss(x, recon_x, kl_loss)
-        debug_tools.benchmark('computing loss')
-        # self._debug_logging(z_where, z_attr, z_pres, z_depth)
 
-        return loss, recon_x, z_where
+        return loss, recon_x, z_where, z_pres
 
     def _build_networks(self):
 
@@ -212,6 +210,9 @@ class SPAIR(nn.Module):
 
             prob = z_pres_prob[:, :, h, w]
 
+            # TODO This is for testing uniform dist
+            # p_z = torch.ones_like(prob) / HW
+
             # Bernoulli KL
             # note to self: May need to use safe log to prevent NaN
             _obj_kl = (
@@ -228,7 +229,6 @@ class SPAIR(nn.Module):
             mult = sample * p_z_given_Cz + (1-sample) * (1-p_z_given_Cz)
 
             # update count distribution
-            # FIXME why multiplying mult
             count_distribution1 = mult * count_distribution
             normalizer = count_distribution1.sum(dim=1, keepdim=True).clamp(min=1e-6)
             # why clip normalizer?
@@ -236,31 +236,23 @@ class SPAIR(nn.Module):
             count_distribution = count_distribution1 / normalizer
 
             # Test underflow issues
-            isnan = torch.isnan(obj_kl).sum()
-            isneg = (count_distribution < 0).float().sum()
-            if isnan > 0 or isneg > 0:
-                print('\n\n\n\t------------------- NAN OCCURED %d-----------------\n' % i)
-                print('is neg', isneg)
-                print('is nan', isnan)
-                print('_obj_kl:\n', _obj_kl)
-                print('\np_z:\n', p_z)
-                # print('\nprob:\n', prob, 'hw', h,w)
-                print('\nprob:\n', prob)
-                # print('\nz_pres_prob max & min:\n', z_pres_prob.max(), ' min ', z_pres_prob.min())
-                print('\ncount_distribution:\n', count_distribution)
-                # print('\ncount_so_far:\n', count_so_far)
-                # print('\nHW, i:\n', HW, i)
-                # print('\nsample:\n', sample)
-                print('\np_z_given_Cz:\n', p_z_given_Cz)
-                # print('\nmult:\n', mult)
-                raise AssertionError('Yo you dun goof')
+
+            debug_tools.nan_hunter('KL Divergence',
+                                   global_step = self.global_step,
+                                   grid_location = (h,w),
+                                   _obj_kl = _obj_kl,
+                                   p_z = p_z,
+                                   prob = prob,
+                                   count_distribution = count_distribution,
+                                   p_z_given_cz = p_z_given_Cz,
+                                   )
+
             count_so_far += sample
 
             i += 1
 
 
         KL['pres_dist'] = obj_kl
-
 
         return KL
 
@@ -489,8 +481,8 @@ class SPAIR(nn.Module):
         object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
         # TODO DELETE ME
-        z_attr.register_hook(lambda grad: debug_tools.z_attr_grad_hook(grad, self.writer, self.global_step))
-        object_logits.register_hook(lambda grad: debug_tools.decoder_output_grad_hook(grad, self.writer, self.global_step))
+        # z_attr.register_hook(lambda grad: debug_tools.z_attr_grad_hook(grad, self.writer, self.global_step))
+        # object_logits.register_hook(lambda grad: debug_tools.decoder_output_grad_hook(grad, self.writer, self.global_step))
         # TODO END DELETE ME
         objects = clamped_sigmoid(object_logits, use_analytical=True)
         objects = objects.view(-1, px, px, input_chan_w_alpha)
@@ -667,6 +659,41 @@ class ObjectConvDecoder(nn.Module):
 
         return self.linear(conv_out_flat)
 
+class Self_Attn(nn.Module):
+    """ Self attention Layer"""
+
+    def __init__(self, in_dim, activation):
+        super(Self_Attn, self).__init__()
+        self.chanel_in = in_dim
+        self.activation = activation
+
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+        self.softmax = nn.Softmax(dim=-1)  #
+
+    def forward(self, x):
+        """
+            inputs :
+                x : input feature maps( B X C X W X H)
+            returns :
+                out : self attention value + input feature
+                attention: B X N X N (N is Width*Height)
+        """
+        m_batchsize, C, width, height = x.size()
+        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
+        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
+        energy = torch.bmm(proj_query, proj_key)  # transpose check
+        attention = self.softmax(energy)  # BX (N) X (N)
+        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
+
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(m_batchsize, C, width, height)
+
+        out = self.gamma * out + x
+        return out, attention
 
 
 

@@ -1,5 +1,3 @@
-# Work in progress
-Network is not fully functional yet. This implementation is part of a thesis on unsupervised state/action space abstraction and simulation on the MDP. 
 
 # SPAIR_pytorch
 Pytorch implementation of [Spatially Invariant Unsupervised Object Detection with VAE](https://research.fb.com/wp-content/uploads/2018/12/Spatially-Invariant-Unsupervised-Object-Detection-with-Convolutional-Neural-Networks.pdf?) 
