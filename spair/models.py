@@ -1,25 +1,20 @@
 import itertools
-import argparse
 
-import numpy as np
-import torch
 from torch import nn
-from torch.nn import Sequential, Conv2d, ReLU, Linear
-from torch.nn import functional as F
 from torch.distributions import Normal, Uniform
 from torch.distributions.kl import kl_divergence
-from tensorboardX import SummaryWriter
-from spair import config as cfg
 from spair.modules import *
+from spair.manager import RunManager
+from spair.modules import Backbone, build_MLP
 
-class SPAIR(nn.Module):
-    def __init__(self, image_shape, writer:SummaryWriter, device):
+
+class SpairBase(nn.Module):
+    def __init__(self, image_shape):
         super().__init__()
         self.image_shape = image_shape
-        self.writer = writer
+        self.writer = RunManager.writer
         # self.pixels_per_cell = pixels_per_cell
-        self.B = 1 # TODO Change num bounding boxes
-        self.device = device
+        self.device = RunManager.device
 
         # context box dimension based on N_lookbacks
         # totalsize is n_lookback_cells * [localization, attribute, depth, presence] ~= 224
@@ -30,14 +25,16 @@ class SPAIR(nn.Module):
         self._build_indep_prior()
 
         self.pixels_per_cell = tuple(int(i) for i in self.backbone.grid_cell_size) #[pixel_x, pixel_y]
+
+        self.run_args = RunManager.run_args
         print('model initialized')
 
-    def forward(self, x, global_step = 0):
+    def forward(self, x):
         debug_tools.benchmark_init()
         # feature space
         _, H, W = self.feature_space_dim
-        feat = self.backbone(x)
-        self.global_step = global_step
+        backbone_feat = self.backbone(x)
+        self.global_step = RunManager.global_step
         self.batch_size = x.shape[0]
 
         # Keeps track of all distributions
@@ -47,124 +44,16 @@ class SPAIR(nn.Module):
         self.obj_pres_prob = {}
         self.obj_pres = {}
 
-        context_mat = {}
 
-        z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
-        z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
-        z_depth = torch.empty(self.batch_size, 1, H, W).to(self.device)
-        z_pres = torch.empty(self.batch_size, 1, H, W).to(self.device)
-        z_pres_prob = torch.empty(self.batch_size, 1, H, W).to(self.device)
+        self._compute_latent_vars(x, backbone_feat)
 
-        edge_element = self.virtual_edge_element[None,:].repeat(self.batch_size, 1)
-        self.training_wheel = exponential_decay(self.global_step, self.device, **cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
-        self.writer.add_scalar('training_wheel',self.training_wheel, self.global_step)
+        # self.attn(test_context)
 
-        # s = torch.cuda.Stream()
-        # # # Iterate through each grid cell and bounding boxes for that cell
-        # with torch.cuda.stream(s):
-        debug_tools.nan_hunter('Before Main Loop', edge_element = edge_element, backbone_feature = feat, global_step = self.global_step,)
-        test_context = torch.empty(self.batch_size, 55, H, W).to(self.device)
-
-        for h, w in itertools.product(range(H), range(W)):
-
-            # feature vec for each cell in the grid
-            cell_feat = feat[:, :, h, w]
-
-            context = self._get_sequential_context(context_mat, h,w, edge_element)
-
-            # --- z_where ---
-            layer_inp = torch.cat((cell_feat, context), dim=-1)
-            rep_input, passthru_features = self.box_network(layer_inp)
-            box, normalized_box = self._build_box(rep_input, h, w)
-            z_where[:, :, h, w,] = normalized_box
-
-            # --- z_what ---
-            input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
-            attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
-            attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
-            z_attr[:, :, h, w, ] = attr
-
-            # --- z_depth ---
-            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
-
-            depth_latent, passthru_features = self.z_network(layer_inp)
-
-            depth_mean, depth_std = latent_to_mean_std(depth_latent)
-            depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
-
-            depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h,w))
-            depth = 4 * clamped_sigmoid(depth_logits)
-            z_depth[:,:, h, w] = depth
-
-            # --- z_presence ---
-            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
-            pres_logit = self.obj_network(layer_inp)
-            obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
-
-            z_pres[:,:, h,w] = obj_pres
-            z_pres_prob[:, :, h, w] = obj_pres_prob
-            context_mat[(h,w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
-            test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
-            debug_tools.nan_hunter('Main Loop',
-                                    global_step = self.global_step,
-                                    grid_h=h,
-                                    grid_w = w,
-                                   context=context,
-                                   normalized_box = normalized_box,
-                                   attr = attr,
-                                   depth=depth,
-                                   presence = obj_pres
-                                   )
-
-
-        self.attn(test_context)
-        # Merge dist param, we have to use loop or autograd might not work
-        for dist_name, dist_params in self.dist_param.items():
-            means = self.dist_param[dist_name]['mean']
-            sigmas = self.dist_param[dist_name]['sigma']
-            self.dist[dist_name] = Normal(loc=means, scale=sigmas)
-
-        kl_loss = self._compute_KL(z_pres, z_pres_prob)
-        recon_x = self._render(z_attr, z_where, z_depth, z_pres, x)
+        kl_loss = self._compute_KL(self.z_pres, self.z_pres_prob)
+        recon_x = self._render(self.z_attr, self.z_where, self.z_depth, self.z_pres, x)
         loss = self._build_loss(x, recon_x, kl_loss)
 
-        return loss, recon_x, z_where, z_pres
-
-    def _build_networks(self):
-
-        # backbone network
-        self.backbone = Backbone(self.image_shape, cfg.N_BACKBONE_FEATURES)
-        self.feature_space_dim = self.backbone.compute_output_shape()
-
-        n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
-        n_localization_latent = 8  # mean and var for (y, x, h, w)
-        n_backbone_features = self.feature_space_dim[0]
-
-        # bounding box
-        inputsize = n_backbone_features + self.context_dim
-        self.box_network = build_MLP(inputsize, multiple_output=(n_localization_latent, n_passthrough_features))
-
-        # object attribute
-        n_attr_out = 2 * cfg.N_ATTRIBUTES
-        obj_dim = cfg.OBJECT_SHAPE[0]
-        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
-        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
-        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
-
-        # object depth
-        z_inp_shape = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + self.context_dim + cfg.N_BACKBONE_FEATURES
-        self.z_network = build_MLP(z_inp_shape, multiple_output=(2, n_passthrough_features)) # For training pass through features
-
-        # object presence
-        obj_inp_shape = z_inp_shape + 1 # incorporated z_network out dim (1 dim)
-        self.obj_network = build_MLP(obj_inp_shape, 1)
-
-        # object decoder
-        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
-        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
-        self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
-
-        self.attn = Self_Attn(55)
+        return loss, recon_x, self.z_where, self.z_pres
 
     def _compute_KL(self, z_pres, z_pres_prob):
         KL = {}
@@ -176,6 +65,11 @@ class SPAIR(nn.Module):
             masked = z_pres * kl_div
             KL[dist_name] = masked
 
+        # TODO Temporary z_presence test
+        # Disable z_presence prior
+        if self.run_args.no_z_prior:
+            return KL
+
         # --- Object Presence KL ---
         # Special prior computation, refer to Appendix B for detail
         _, H, W = self.feature_space_dim
@@ -183,7 +77,7 @@ class SPAIR(nn.Module):
         batch_size = self.batch_size
         count_support = torch.arange(HW + 1, dtype=torch.float32).to(self.device)# [50] ~ [0, 1, ... 50]
         # FIXME starts at 1 output and gets small gradually
-        count_prior_log_odds = exponential_decay(self.global_step, self.device, **cfg.OBJ_PRES_COUNT_LOG_PRIOR)
+        count_prior_log_odds = exponential_decay(**cfg.OBJ_PRES_COUNT_LOG_PRIOR)
         # count_prior_prob = torch.sigmoid(count_prior_log_odds)
         count_prior_prob = 1 / ((-count_prior_log_odds).exp() + 1)
         # p(z_pres|C=nz(z_pres)) geometric dist, see appendix A
@@ -209,14 +103,18 @@ class SPAIR(nn.Module):
             # Adds a new dim to to each vector for dot product [Batch, 50, ?]
             _count_distribution = count_distribution[:,None,:]
             _p_z_given_Cz = p_z_given_Cz[:,:,None]
-            # Computing the prior, flatten tensors [Batch, 1]
-            # equivalent of doing batch dot product on two vectors
-            p_z = torch.bmm(_count_distribution, _p_z_given_Cz).squeeze(-1)
+
 
             prob = z_pres_prob[:, :, h, w]
 
             # TODO This is for testing uniform dist
-            # p_z = torch.ones_like(prob) / HW
+            if self.run_args.uniform_z_prior:
+                p_z = torch.ones_like(prob) / HW
+            else:
+                # Computing the prior, flatten tensors [Batch, 1]
+                # equivalent of doing batch dot product on two vectors
+                p_z = torch.bmm(_count_distribution, _p_z_given_Cz).squeeze(-1)
+
 
             # Bernoulli KL
             # note to self: May need to use safe log to prevent NaN
@@ -243,7 +141,6 @@ class SPAIR(nn.Module):
             # Test underflow issues
 
             debug_tools.nan_hunter('KL Divergence',
-                                   global_step = self.global_step,
                                    grid_location = (h,w),
                                    _obj_kl = _obj_kl,
                                    p_z = p_z,
@@ -260,6 +157,9 @@ class SPAIR(nn.Module):
         KL['pres_dist'] = obj_kl
 
         return KL
+
+    def _compute_latent_vars(self, x, backbone_features):
+        raise NotImplementedError()
 
     def _build_indep_prior(self):
         '''
@@ -319,72 +219,11 @@ class SPAIR(nn.Module):
 
         return context
 
-    def _build_box(self, latent_var, h, w):
-        ''' Builds the bounding box from latent space z'''
-
-        mean, std = latent_to_mean_std(latent_var)
-
-        mean, std = self._freeze_learning(mean, std)
-
-        #
-        cy_mean, cx_mean, height_mean, width_mean = torch.chunk(mean, 4, dim=-1)
-        cy_std, cx_std, height_std, width_std = torch.chunk(std, 4, dim=-1)
-
-        cy_logits = self._sample_z(cy_mean, cy_std, 'cy_logit', (h,w))
-        cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit', (h,w))
-        height_logits = self._sample_z(height_mean, height_std, 'height_logit', (h,w))
-        width_logits = self._sample_z(width_mean, width_std, 'width_logit', (h, w))
-
-        # --- cell y/x transform ---
-        cell_y = clamped_sigmoid(cy_logits) # single digit
-        cell_x = clamped_sigmoid(cx_logits)
-
-        # yx ~ [-0.5 , 1.5]
-        max_yx = cfg.MAX_YX
-        min_yx = cfg.MIN_YX
-        assert max_yx > min_yx
-        cell_y = float(max_yx - min_yx) * cell_y + min_yx
-        cell_x = float(max_yx - min_yx) * cell_x + min_yx
-
-        # --- height/width transform ---
-        # hw ~ [0.0 , 1.0]
-        height = clamped_sigmoid(height_logits)
-        width = clamped_sigmoid(width_logits)
-        max_hw = cfg.MAX_HW
-        min_hw = cfg.MIN_HW
-        assert max_hw > min_hw
-
-        # current bounding box height & width ratio to anchor box
-        height = float(max_hw - min_hw) * height + min_hw
-        width = float(max_hw - min_hw) * width + min_hw
-
-        box = torch.cat([cell_x, cell_y, width, height], dim=-1)
-
-        # --- Compute image-normalized box parameters ---
-
-        # box height and width normalized to image height and width
-        anchor_box_dim = cfg.ANCHORBOX_SHAPE[0]
-        _, image_height, image_width = cfg.INPUT_IMAGE_SHAPE
-        # bounding box height & width relative to the whole image
-        ys = height * anchor_box_dim / image_height
-        xs = width * anchor_box_dim / image_width
-
-        # box centre mapped with respect to full image
-        yt = (self.pixels_per_cell[0] / image_height) * (cell_y + h)
-        xt = (self.pixels_per_cell[1] / image_width) * (cell_x + w)
-
-        normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
-
-        if xs.min() < 0 or ys.min() < 0:
-            print('oh shoot')
-
-        return box, normalized_box
-
     def _encode_attr(self, x, normalized_box):
         ''' Uses spatial transformation to crop image '''
         # --- Get object attributes using object encoder ---
 
-        input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE, self.device)
+        input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE)
         flat_input_glimpses = input_glimpses.flatten(start_dim=1) # flatten
         attr = self.object_encoder(flat_input_glimpses)
         # attr = attr.view(-1, 2 * cfg.N_ATTRIBUTES)
@@ -427,27 +266,6 @@ class SPAIR(nn.Module):
 
         if len(ret) == 1: return ret[0] # single element doesn't need unfolding
         return ret
-
-    def _sample_z(self, mean, var, name, cell_coord):
-        '''
-        Performs the sampling step in VAE and stores the distribution for KL computation
-        :param mean:
-        :param var:
-        :param name: name of the distribution
-        :return: sampled value
-        '''
-        dist = Normal(loc=mean, scale=var)
-
-        if name not in self.dist_param.keys():
-            _, H, W = self.feature_space_dim
-            self.dist_param[name] = {}
-            self.dist_param[name]['mean'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
-            self.dist_param[name]['sigma'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
-        x, y = cell_coord
-        self.dist_param[name]['mean'][:, :, x, y] = mean
-        self.dist_param[name]['sigma'][:, :, x, y] = var
-
-        return dist.rsample()
 
     def _render(self, z_attr, z_where, z_depth, z_pres, x):
         '''
@@ -504,7 +322,7 @@ class SPAIR(nn.Module):
         objects = torch.cat([objects, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
 
         # TODO debug output image, remove me later
-        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, x, self.writer, self.global_step)
+        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, x)
 
         # ---- exiting B x H x W x C realm .... ----
 
@@ -512,7 +330,7 @@ class SPAIR(nn.Module):
 
         img_c, img_h, img_w, = (self.image_shape)
         n_obj = H*W # max number of objects in a grid
-        transformed_imgs = stn(objects_, z_where, [img_h, img_w],  self.device, inverse=True)
+        transformed_imgs = stn(objects_, z_where, [img_h, img_w], inverse=True)
         transformed_objects = transformed_imgs.contiguous().view(-1, n_obj, img_c + 2 , img_h, img_w)
         # incorporate alpha
         # FIXME The original implement doesn't seem to be calculating alpha correctly.
@@ -542,21 +360,21 @@ class SPAIR(nn.Module):
         return output_image
 
     def _build_loss(self, x, recon_x, kl):
-        print('============ Losses =============')
+        # print('============ Losses =============')
         # Reconstruction loss
         recon_loss = F.binary_cross_entropy(recon_x, x, reduction='sum')
         self.writer.add_scalar('losses/reconst', recon_loss, self.global_step)
-        print('Reconstruction loss:', '{:.4f}'.format(recon_loss.item()))
+        # print('Reconstruction loss:', '{:.4f}'.format(recon_loss.item()))
         # KL loss with Beta factor
         kl_loss = 0
         for name, z_kl in kl.items():
             kl_mean = torch.mean(torch.sum(z_kl, dim=[1,2,3])) # batch mean
             kl_loss += kl_mean
-            print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
+            # print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
             self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )
 
         loss = recon_loss + cfg.VAE_BETA * kl_loss
-        print('\n ===> total loss:', '{:.4f}'.format(loss.item()))
+        # print('\n ===> total loss:', '{:.4f}'.format(loss.item()))
         self.writer.add_scalar('losses/total', loss, self.global_step)
 
 
@@ -602,6 +420,378 @@ class SPAIR(nn.Module):
         self.writer.add_scalar('z_depth/mean', z_depth_np.mean(), self.global_step)
         self.writer.add_scalar('z_depth/min', z_depth_np.min(), self.global_step)
         print('========= end of debugging info  ======================')
+
+class Spair(SpairBase):
+
+    def _compute_latent_vars(self, x, backbone_features):
+
+
+
+        _, H, W = self.feature_space_dim
+        context_mat = {}
+        edge_element = self.virtual_edge_element[None, :].repeat(self.batch_size, 1)
+        self.training_wheel = exponential_decay(**cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
+        self.writer.add_scalar('training_wheel', self.training_wheel, self.global_step)
+
+        self.z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
+        self.z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
+        self.z_depth = torch.empty(self.batch_size, 1, H, W).to(self.device)
+        self.z_pres = torch.empty(self.batch_size, 1, H, W).to(self.device)
+        self.z_pres_prob = torch.empty(self.batch_size, 1, H, W).to(self.device)
+
+        # s = torch.cuda.Stream()
+        # # # Iterate through each grid cell and bounding boxes for that cell
+        # with torch.cuda.stream(s):
+        debug_tools.nan_hunter('Before Main Loop', input_data = x, edge_element=edge_element, backbone_feature=backbone_features)
+        # test_context = torch.empty(self.batch_size, 55, H, W).to(self.device)
+
+        for h, w in itertools.product(range(H), range(W)):
+            # feature vec for each cell in the grid
+            cell_feat = backbone_features[:, :, h, w]
+
+            context = self._get_sequential_context(context_mat, h, w, edge_element)
+
+            # --- z_where ---
+            layer_inp = torch.cat((cell_feat, context), dim=-1)
+            rep_input, passthru_features = self.box_network(layer_inp)
+            box, normalized_box = self._build_box(rep_input, h, w)
+            self.z_where[:, :, h, w, ] = normalized_box
+
+            # --- z_what ---
+            input_glimpses, attr_latent_var = self._encode_attr(x, normalized_box)
+            attr_mean, attr_std = latent_to_mean_std(attr_latent_var)
+            attr = self._sample_z(attr_mean, attr_std, 'attr', (h, w))
+            self.z_attr[:, :, h, w, ] = attr
+
+            # --- z_depth ---
+            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr], dim=1)
+
+            depth_latent, passthru_features = self.z_network(layer_inp)
+
+            depth_mean, depth_std = latent_to_mean_std(depth_latent)
+            depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
+
+            depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit', (h, w))
+            depth = 4 * clamped_sigmoid(depth_logits)
+            self.z_depth[:, :, h, w] = depth
+
+            # --- z_presence ---
+            layer_inp = torch.cat([cell_feat, context, passthru_features, box, attr, depth], dim=1)
+            pres_logit = self.obj_network(layer_inp)
+            obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
+
+            self.z_pres[:, :, h, w] = obj_pres
+            self.z_pres_prob[:, :, h, w] = obj_pres_prob
+            context_mat[(h, w)] = torch.cat((box, attr, depth, obj_pres), dim=-1)
+            # test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
+            debug_tools.nan_hunter('Main Loop',
+                                   grid_h=h,
+                                   grid_w=w,
+                                   context=context,
+                                   normalized_box=normalized_box,
+                                   attr=attr,
+                                   depth=depth,
+                                   presence=obj_pres
+                                   )
+
+        # Merge dist param, we have to use loop or autograd might not work
+        for dist_name, dist_params in self.dist_param.items():
+            means = self.dist_param[dist_name]['mean']
+            sigmas = self.dist_param[dist_name]['sigma']
+            self.dist[dist_name] = Normal(loc=means, scale=sigmas)
+
+
+    def _build_networks(self):
+
+        # backbone network
+        self.backbone = Backbone(self.image_shape, cfg.N_BACKBONE_FEATURES)
+        self.feature_space_dim = self.backbone.compute_output_shape()
+
+        n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
+        n_localization_latent = 8  # mean and var for (y, x, h, w)
+        n_backbone_features = self.feature_space_dim[0]
+
+        # bounding box
+        inputsize = n_backbone_features + self.context_dim
+        self.box_network = build_MLP(inputsize, multiple_output=(n_localization_latent, n_passthrough_features))
+
+        # object attribute
+        n_attr_out = 2 * cfg.N_ATTRIBUTES
+        obj_dim = cfg.OBJECT_SHAPE[0]
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
+        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers=[256, 128])
+
+        # object depth
+        z_inp_shape = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + self.context_dim + cfg.N_BACKBONE_FEATURES
+        self.z_network = build_MLP(z_inp_shape, multiple_output=(2, n_passthrough_features)) # For training pass through features
+
+        # object presence
+        obj_inp_shape = z_inp_shape + 1 # incorporated z_network out dim (1 dim)
+        self.obj_network = build_MLP(obj_inp_shape, 1)
+
+        # object decoder
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
+        self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
+
+        self.attn = Self_Attn(55)
+
+    def _build_box(self, latent_var, h, w):
+        ''' Builds the bounding box from latent space z'''
+
+        mean, std = latent_to_mean_std(latent_var)
+        mean, std = self._freeze_learning(mean, std)
+
+        #
+        cy_mean, cx_mean, height_mean, width_mean = torch.chunk(mean, 4, dim=-1)
+        cy_std, cx_std, height_std, width_std = torch.chunk(std, 4, dim=-1)
+
+        cy_logits = self._sample_z(cy_mean, cy_std, 'cy_logit', (h,w))
+        cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit', (h,w))
+        height_logits = self._sample_z(height_mean, height_std, 'height_logit', (h,w))
+        width_logits = self._sample_z(width_mean, width_std, 'width_logit', (h, w))
+
+        # --- cell y/x transform ---
+        cell_y = clamped_sigmoid(cy_logits) # single digit
+        cell_x = clamped_sigmoid(cx_logits)
+
+        # yx ~ [-0.5 , 1.5]
+        max_yx = cfg.MAX_YX
+        min_yx = cfg.MIN_YX
+        assert max_yx > min_yx
+        cell_y = float(max_yx - min_yx) * cell_y + min_yx
+        cell_x = float(max_yx - min_yx) * cell_x + min_yx
+
+        # --- height/width transform ---
+        # hw ~ [0.0 , 1.0]
+        height = clamped_sigmoid(height_logits)
+        width = clamped_sigmoid(width_logits)
+        max_hw = cfg.MAX_HW
+        min_hw = cfg.MIN_HW
+        assert max_hw > min_hw
+
+        # current bounding box height & width ratio to anchor box
+        height = float(max_hw - min_hw) * height + min_hw
+        width = float(max_hw - min_hw) * width + min_hw
+
+        box = torch.cat([cell_x, cell_y, width, height], dim=-1)
+
+        # --- Compute image-normalized box parameters ---
+
+        # box height and width normalized to image height and width
+        anchor_box_dim = cfg.ANCHORBOX_SHAPE[0]
+        _, image_height, image_width = cfg.INPUT_IMAGE_SHAPE
+        # bounding box height & width relative to the whole image
+        ys = height * anchor_box_dim / image_height
+        xs = width * anchor_box_dim / image_width
+
+        # box centre mapped with respect to full image
+        yt = (self.pixels_per_cell[0] / image_height) * (cell_y + h)
+        xt = (self.pixels_per_cell[1] / image_width) * (cell_x + w)
+
+        normalized_box = torch.cat([xt, yt, xs, ys], dim=-1)
+
+        if xs.min() < 0 or ys.min() < 0:
+            print('oh shoot')
+
+        return box, normalized_box
+
+    def _sample_z(self, mean, var, name, cell_coord):
+        '''
+        Performs the sampling step in VAE and stores the distribution for KL computation
+        :param mean:
+        :param var:
+        :param name: name of the distribution
+        :return: sampled value
+        '''
+        dist = Normal(loc=mean, scale=var)
+
+        if name not in self.dist_param.keys():
+            _, H, W = self.feature_space_dim
+            self.dist_param[name] = {}
+            self.dist_param[name]['mean'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
+            self.dist_param[name]['sigma'] = torch.empty(self.batch_size, mean.shape[-1], H, W, ).to(self.device)
+        x, y = cell_coord
+        self.dist_param[name]['mean'][:, :, x, y] = mean
+        self.dist_param[name]['sigma'][:, :, x, y] = var
+
+        return dist.rsample()
+
+class ConvSpair(SpairBase):
+
+    def _build_networks(self):
+
+        # backbone network
+        self.backbone = Backbone(self.image_shape, cfg.N_BACKBONE_FEATURES)
+        self.feature_space_dim = self.backbone.compute_output_shape()
+
+        n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
+        n_localization_latent = 8  # mean and var for (y, x, h, w)
+        n_backbone_features = self.feature_space_dim[0]
+
+        # bounding box
+        self.z_where_net = LatentConv(n_backbone_features, n_localization_latent, additional_out_channels = n_passthrough_features)
+
+        # object attribute
+        n_attr_out = 2 * cfg.N_ATTRIBUTES
+        obj_dim = cfg.OBJECT_SHAPE[0]
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
+        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers = [256, 128])
+
+        z_depth_in = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + cfg.N_BACKBONE_FEATURES
+        self.z_depth_net = LatentConv(z_depth_in, 2, additional_out_channels = n_passthrough_features)
+
+        # object presence
+        z_pres_in = z_depth_in + 1 # incorporated z_network out dim (1 dim)
+        self.z_pres_net = LatentConv(z_pres_in, 1)
+
+        # object decoder
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
+        self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
+
+        self.attn = Self_Attn(55)
+
+    def _compute_latent_vars(self, x:torch.Tensor, backbone_features):
+        _, H, W = self.feature_space_dim
+        self.training_wheel = exponential_decay(**cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
+        self.writer.add_scalar('training_wheel', self.training_wheel, self.global_step)
+
+        # s = torch.cuda.Stream()
+        # # # Iterate through each grid cell and bounding boxes for that cell
+        # with torch.cuda.stream(s):
+        debug_tools.nan_hunter('Before Main Loop', input_data=x, backbone_feature=backbone_features)
+        # test_context = torch.empty(self.batch_size, 55, H, W).to(self.device)
+
+        # --- z_where ---
+        z_where, passthru_features = self.z_where_net(backbone_features)
+        local_bbox, bbox = self._build_box(z_where)
+        self.z_where = bbox
+
+        # --- z_what ---
+        bbox_hwc = to_H_W_C(bbox)
+        # Repeat input H*W times so stn can process them at once
+        batch_size, h, w, _ = bbox_hwc.shape
+        x_expanded = x.unsqueeze(1).expand(-1, h * w, -1, -1, -1, )
+
+        # [ Batch, H*W, ... ] -> [ Batch*H*W, ... ]
+        bbox_bundle = bbox_hwc.contiguous().view(batch_size * h * w, -1 )
+        x_bundle = x_expanded.contiguous().view(batch_size * h * w, self.image_shape[0], self.image_shape[1], self.image_shape[2])
+
+        input_glimpses, z_what_bundle = self._encode_attr(x_bundle, bbox_bundle)
+
+        # [ Batch*H*W, ... ] -> [ Batch,H,W, ... ]
+        z_what = to_C_H_W(z_what_bundle.view(batch_size, h, w, -1))
+
+        attr_mean, attr_std = latent_to_mean_std(z_what)
+        attr = self._sample_z(attr_mean, attr_std, 'attr')
+        self.z_attr = attr
+
+        # --- z_depth ---
+        layer_inp = torch.cat([backbone_features, passthru_features, local_bbox, attr], dim=1)
+
+        depth_latent, passthru_features = self.z_depth_net(layer_inp)
+
+        depth_mean, depth_std = latent_to_mean_std(depth_latent)
+        depth_mean, depth_std = self._freeze_learning(depth_mean, depth_std)
+
+        depth_logits = self._sample_z(depth_mean, depth_std, 'depth_logit')
+        depth = 4 * clamped_sigmoid(depth_logits)
+        self.z_depth = depth
+
+        # --- z_presence ---
+        layer_inp = torch.cat([backbone_features, passthru_features, local_bbox, attr, depth], dim=1)
+        pres_logit = self.z_pres_net(layer_inp)
+        obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
+
+        self.z_pres = obj_pres
+        self.z_pres_prob = obj_pres_prob
+        # test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
+        debug_tools.nan_hunter('Main Loop',
+                               normalized_box=bbox,
+                               attr=attr,
+                               depth=depth,
+                               presence=obj_pres
+                               )
+
+    def _build_box(self, z_where):
+        ''' Builds the bounding box from latent space z'''
+
+        mean, std = latent_to_mean_std(z_where)
+        mean, std = self._freeze_learning(mean, std)
+
+        #
+        cy_mean, cx_mean, height_mean, width_mean = torch.chunk(mean, 4, dim=1)
+        cy_std, cx_std, height_std, width_std = torch.chunk(std, 4, dim=1)
+
+        cy_logits = self._sample_z(cy_mean, cy_std, 'cy_logit')
+        cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit')
+        height_logits = self._sample_z(height_mean, height_std, 'height_logit')
+        width_logits = self._sample_z(width_mean, width_std, 'width_logit')
+
+        cell_y = clamped_sigmoid(cy_logits)  # single digit
+        cell_x = clamped_sigmoid(cx_logits)
+        height = clamped_sigmoid(height_logits)
+        width = clamped_sigmoid(width_logits)
+
+        # --- map y,x, height, width relative to cell/anchor box ---
+
+        # yx ~ [-0.5 , 1.5]
+        max_yx = cfg.MAX_YX
+        min_yx = cfg.MIN_YX
+        assert max_yx > min_yx
+        cell_y = float(max_yx - min_yx) * cell_y + min_yx
+        cell_x = float(max_yx - min_yx) * cell_x + min_yx
+
+        # hw ~ [0.0 , 1.0]
+        max_hw = cfg.MAX_HW
+        min_hw = cfg.MIN_HW
+        assert max_hw > min_hw
+
+        # current bounding box height & width ratio to anchor box
+        height = float(max_hw - min_hw) * height + min_hw
+        width = float(max_hw - min_hw) * width + min_hw
+
+        box = torch.cat([cell_x, cell_y, width, height], dim=1)
+
+        # --- Compute image-normalized box parameters ---
+
+        # box height and width normalized to image height and width
+        anchor_box_dim = cfg.ANCHORBOX_SHAPE[0]
+        _, image_height, image_width = cfg.INPUT_IMAGE_SHAPE
+        # bounding box height & width relative to the whole image
+        ys = height * anchor_box_dim / image_height
+        xs = width * anchor_box_dim / image_width
+
+        # box centre mapped with respect to full image
+        _, H, W = self.feature_space_dim
+        h_offset = torch.arange(0, H, dtype=torch.float32,).unsqueeze(-1).expand_as(cell_y).to(RunManager.device)
+        w_offset = torch.arange(0, W, dtype=torch.float32,).expand_as(cell_x).to(RunManager.device)
+        yt = (self.pixels_per_cell[0] / image_height) * (cell_y + h_offset)
+        xt = (self.pixels_per_cell[1] / image_width) * (cell_x + w_offset)
+
+        normalized_box = torch.cat([xt, yt, xs, ys], dim=1)
+
+        if xs.min() < 0 or ys.min() < 0:
+            print('oh shoot')
+
+        return box, normalized_box
+
+    def _sample_z(self, mean, var, name):
+        '''
+        Performs the sampling step in VAE and stores the distribution for KL computation
+        :param mean:
+        :param var:
+        :param name: name of the distribution
+        :return: sampled value
+        '''
+
+        dist = Normal(loc=mean, scale=var)
+        self.dist[name] = dist
+        sampled = dist.rsample()
+        return sampled
 
 class ObjectConvEncoder(nn.Module):
 

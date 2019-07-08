@@ -9,6 +9,7 @@ import numpy as np
 import time
 
 from spair import config as cfg
+from spair.manager import RunManager
 GRID_SIZE = 11
 def plot_torch_image_in_pyplot( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0):
     ''' For visualizing torch images in matplotlib '''
@@ -50,8 +51,9 @@ def torch2npy(t:torch.Tensor, reshape=False):
         return t.cpu().view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, *shape).detach().squeeze().numpy()
     return t.cpu().detach().numpy()
 
-def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_image, writer, step):
-
+def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_image):
+    step = RunManager.global_step
+    writer = RunManager.writer
     if step % 50 != 0:
         return
 
@@ -103,7 +105,10 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     else:
         writer.add_figure('renderer_analysis', fig, step)
 
-def plot_cropped_input_images(cropped_input_images, writer, step):
+def plot_cropped_input_images(cropped_input_images):
+    step = RunManager.global_step
+    writer = RunManager.writer
+
     input_imgs = cropped_input_images.permute(0,4,5, 2,3,1,).cpu().squeeze().detach().numpy()
     # np.swapaxes(input_imgs, )
     input_img = input_imgs[0,...]
@@ -128,7 +133,11 @@ def plot_cropped_input_images(cropped_input_images, writer, step):
     else:
         writer.add_figure('debug_cropped_input_images', fig, step)
 
-def plot_objet_attr_latent_representation(z_attr, writer, step, title='z_attr/heatmap'):
+def plot_objet_attr_latent_representation(z_attr, title='z_attr/heatmap'):
+
+    step = RunManager.global_step
+    writer = RunManager.writer
+
     z_attr = z_attr[0, ...]
     z_attr = torch2npy(z_attr)
 
@@ -195,7 +204,10 @@ def _plot_bounding_boxes(title, bbox, original_image, z_pres, gridspec, fig):
     ax.set_yticks([])
     ax.set_title(title)
 
-def decoder_output_grad_hook(grad, writer, step):
+def decoder_output_grad_hook(grad):
+    step = RunManager.global_step
+    writer = RunManager.writer
+
     if step % 50 != 0:
         return
     obj_px = cfg.OBJECT_SHAPE[0]
@@ -216,7 +228,10 @@ def decoder_output_grad_hook(grad, writer, step):
     else:
         writer.add_figure('grad_visualization/decoder_out', fig, step)
 
-def z_attr_grad_hook(grad, writer, step):
+def z_attr_grad_hook(grad):
+    step = RunManager.global_step
+    writer = RunManager.writer
+
     if step % 50 != 0:
         return
     # grad = grad.view(2, cfg.N_ATTRIBUTES, 11, 11, 2).squeeze().detach().numpy()
@@ -243,6 +258,7 @@ def z_attr_grad_hook(grad, writer, step):
         writer.add_figure('grad_visualization/z_attr', fig, step)
 
 def nan_hunter(name, **kwargs):
+    step = RunManager.global_step
 
     nan_detected = False
     tensors = {}
@@ -260,6 +276,7 @@ def nan_hunter(name, **kwargs):
 
     print('======== NAN DETECTED in %s =======' % name)
 
+    print('global_step', step)
     for name, value in non_tensors.items():
         print(name, ":", value)
 

@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from spair import config as cfg
 from spair import debug_tools
+from spair.manager import RunManager
 
 class Backbone(Module):
     def __init__(self, input_shape, n_out_channels, topology=cfg.DEFAULT_BACKBONE_TOPOLOGY, internal_activation=ReLU):
@@ -110,6 +111,36 @@ class Backbone(Module):
         out = self.net(padded_x)
         return out
 
+class LatentConv(Module):
+    '''
+    Special Convolution Network for learning latent variables
+    '''
+    def __init__(self, in_channels, out_channels, additional_out_channels = None, neighbourhood = 1):
+        super().__init__()
+        self.kernel_size = (neighbourhood - 1) * 2 + 1
+        self.input_pad = nn.ZeroPad2d(neighbourhood - 1)
+        self.out_split_size = None
+
+        if additional_out_channels is not None:
+            self.out_split_size = out_channels
+            out_channels = out_channels + additional_out_channels
+
+
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=self.kernel_size)
+        self.conv2 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
+
+    def forward(self, x):
+        #PAD input
+        padded_input = self.input_pad(x)
+        conv1 = self.conv1(padded_input)
+        out = self.conv2(conv1)
+
+        if self.out_split_size is not None:
+            return out[:, :self.out_split_size, ...], out[:, self.out_split_size:, ...]
+        return out
+
+
+
 def compute_backbone_feature_shape(backbone):
     '''
     Computes the feature space output dimensions based on input image shape
@@ -170,7 +201,7 @@ def latent_to_mean_std(latent_var):
     :param latent_var: VAE latent vector
     :return:
     '''
-    mean, log_std = torch.chunk(latent_var, 2, dim=-1)
+    mean, log_std = torch.chunk(latent_var, 2, dim=1)
     # std = log_std.mul(0.5).exp_()
     std = torch.sigmoid(log_std.clamp(-10, 10)) * 2
     return mean, std
@@ -188,7 +219,7 @@ def clamped_sigmoid(logit, use_analytical=False):
 
     return torch.sigmoid(torch.clamp(logit, -10, 10))
 
-def exponential_decay(global_step:float,device, start, end, decay_rate, decay_step:float, staircase=False, log_space=False, ):
+def exponential_decay(start, end, decay_rate, decay_step:float, staircase=False, log_space=False, ):
     '''
     A decay helper function for computing decay of
     :param global_step:
@@ -200,7 +231,8 @@ def exponential_decay(global_step:float,device, start, end, decay_rate, decay_st
     :param log_space:
     :return:
     '''
-    global_step = torch.tensor(global_step, dtype=torch.float32).to(device)
+
+    global_step = torch.tensor(RunManager.global_step, dtype=torch.float32).to(RunManager.device)
     if staircase:
         t = global_step // decay_step
     else:
@@ -213,7 +245,7 @@ def exponential_decay(global_step:float,device, start, end, decay_rate, decay_st
     return value
 
 
-def stn(image, z_where, output_dims, device, inverse=False):
+def stn(image, z_where, output_dims, inverse=False):
     """
     Slightly modified based on https://github.com/kamenbliznashki/generative_models/blob/master/air.py
 
@@ -243,7 +275,7 @@ def stn(image, z_where, output_dims, device, inverse=False):
     yt = (yt ) * 2 - 1
     xt = (xt ) * 2 - 1
 
-    theta = torch.zeros(2, 3).repeat(batch_size, 1, 1).to(device)
+    theta = torch.zeros(2, 3).repeat(batch_size, 1, 1).to(RunManager.device)
 
     # set scaling
     theta[:, 0, 0] = xs
@@ -255,7 +287,7 @@ def stn(image, z_where, output_dims, device, inverse=False):
     # inverse == upsampling
     if inverse:
         # convert theta to a square matrix to find inverse
-        t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1).to(device)
+        t = torch.tensor([0., 0., 1.]).repeat(batch_size, 1, 1).to(RunManager.device)
         t = torch.cat([theta, t], dim=-2)
         t = t.inverse()
         theta = t[:, :2, :]
