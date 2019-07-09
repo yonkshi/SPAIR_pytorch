@@ -176,7 +176,7 @@ def parse_args(run_log_path):
                         action='store_true')
     parser.add_argument('--conv_neighbourhood', type=int, default=1,
                         help='kernel size of conv_spair')
-
+    parser.add_argument('--use_z_where_decoder', help='z_where uses a decoder', action='store_true')
 
 
     # Dataset config

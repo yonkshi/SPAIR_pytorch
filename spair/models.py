@@ -635,11 +635,13 @@ class ConvSpair(SpairBase):
         self.feature_space_dim = self.backbone.compute_output_shape()
 
         n_passthrough_features = cfg.N_PASSTHROUGH_FEATURES
-        n_localization_latent = 8  # mean and var for (y, x, h, w)
+        n_localization_latent = 4  # mean and var for (y, x, h, w)
         n_backbone_features = self.feature_space_dim[0]
 
         # bounding box
-        self.z_where_net = LatentConv(n_backbone_features, n_localization_latent, additional_out_channels = n_passthrough_features)
+        self.z_where_net = LatentConv(n_backbone_features, n_localization_latent * 2, additional_out_channels = n_passthrough_features)
+        if RunManager.run_args.use_z_where_decoder:
+            self.z_where_decode_net = LatentDeconv(n_localization_latent)
 
         # object attribute
         n_attr_out = 2 * cfg.N_ATTRIBUTES
@@ -738,6 +740,11 @@ class ConvSpair(SpairBase):
         cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit')
         height_logits = self._sample_z(height_mean, height_std, 'height_logit')
         width_logits = self._sample_z(width_mean, width_std, 'width_logit')
+
+        if RunManager.run_args.use_z_where_decoder:
+            z_where_samples = torch.cat([cy_logits, cx_logits, height_logits, width_logits], dim=1)
+            z_where_decoded = self.z_where_decode_net(z_where_samples)
+            cy_logits, cx_logits, height_logits, width_logits = torch.chunk(z_where_decoded, 4, dim=1)
 
         cell_y = clamped_sigmoid(cy_logits)  # single digit
         cell_x = clamped_sigmoid(cx_logits)

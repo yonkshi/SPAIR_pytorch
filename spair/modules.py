@@ -140,7 +140,25 @@ class LatentConv(Module):
             return out[:, :self.out_split_size, ...], out[:, self.out_split_size:, ...]
         return out
 
+class LatentDeconv(Module):
+    '''
+    Specialized de_convolution network for modelling p(c_where|z_where) for localization
+    '''
 
+    def __init__(self, in_channels):
+        super().__init__()
+        self.deconv1 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
+        self.deconv2 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
+        self.deconv_out = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
+
+    def forward(self, x):
+        # PAD input
+
+        deconv1 = self.deconv1(x)
+        deconv2 = self.deconv2(deconv1)
+        out = self.deconv_out(deconv2)
+
+        return out
 
 def compute_backbone_feature_shape(backbone):
     '''
