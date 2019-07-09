@@ -8,9 +8,9 @@ import cv2
 
 
 class SimpleScatteredMNISTDataset(torch.utils.data.Dataset):
-    def __init__(self, in_file):
+    def __init__(self, file_path, subset):
         super().__init__()
-        self.dataset = h5py.File(in_file, 'r')['train/constant']
+        self.dataset = h5py.File(file_path, 'r')['train/{}'.format(subset)]
         self.episode = None
 
         # static_img = self.dataset[9, ...]

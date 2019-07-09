@@ -305,11 +305,13 @@ class SpairBase(nn.Module):
         object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
         # TODO DELETE ME
         # z_attr.register_hook(lambda grad: debug_tools.z_attr_grad_hook(grad, self.writer, self.global_step))
-        # object_logits.register_hook(lambda grad: debug_tools.decoder_output_grad_hook(grad, self.writer, self.global_step))
+        # object_logits.register_hook(lambda grad: debug_tools.grad_nan_hook('object_logits',grad))
         # TODO END DELETE ME
         objects = clamped_sigmoid(object_logits, use_analytical=True)
         objects = objects.view(-1, px, px, input_chan_w_alpha)
-
+        # TODO DELETE ME
+        # objects.register_hook(lambda grad: debug_tools.grad_nan_hook('object after sigmoid',grad))
+        # TODO END DELETE ME
         # incorporate presence in alpha channel
         objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1])
 
@@ -346,12 +348,18 @@ class SpairBase(nn.Module):
 
         img = alpha.expand_as(color_channels) * color_channels
 
+        # TODO DELETE ME
+        # img.register_hook(lambda grad: debug_tools.grad_nan_hook('rendering image', grad))
+        # TODO END DELETE ME
+
         # normalize importance
         importance = importance / importance.sum(dim=1, keepdim=True)
         importance = importance.expand_as(img)
         # scale gradient
         weighted_grads_image = img * importance # + (1 - importance) * img.detach()
-
+        # TODO DELETE ME
+        # weighted_grads_image.register_hook(lambda grad: debug_tools.grad_nan_hook('weighted image', grad))
+        # TODO END DELETE ME
         output_image = weighted_grads_image.sum(dim=1) # sum up along n_obj per image
 
         # Fix numerical issue
@@ -766,6 +774,7 @@ class ConvSpair(SpairBase):
         xs = width * anchor_box_dim / image_width
 
         # box centre mapped with respect to full image
+        # TODO Check if XY are not YX when adding the offset!!!!!!!
         _, H, W = self.feature_space_dim
         h_offset = torch.arange(0, H, dtype=torch.float32,).unsqueeze(-1).expand_as(cell_y).to(RunManager.device)
         w_offset = torch.arange(0, W, dtype=torch.float32,).expand_as(cell_x).to(RunManager.device)

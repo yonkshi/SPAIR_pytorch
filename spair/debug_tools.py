@@ -7,9 +7,12 @@ from matplotlib.collections import PatchCollection
 import torch
 import numpy as np
 import time
+import requests
+
 
 from spair import config as cfg
 from spair.manager import RunManager
+from spair.logging import *
 GRID_SIZE = 11
 def plot_torch_image_in_pyplot( out:torch.Tensor, inp:torch.Tensor = None, batch_n=0):
     ''' For visualizing torch images in matplotlib '''
@@ -208,8 +211,14 @@ def decoder_output_grad_hook(grad):
     step = RunManager.global_step
     writer = RunManager.writer
 
-    if step % 50 != 0:
+    if torch.isnan(grad).sum() == 0:
         return
+    obj_px = cfg.OBJECT_SHAPE[0]
+    grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2)
+    nan_locations = torch.isnan(grad).nonzero()
+
+    print('nan_locations', nan_locations)
+
     obj_px = cfg.OBJECT_SHAPE[0]
     grad = grad.view(cfg.BATCH_SIZE, GRID_SIZE, GRID_SIZE, obj_px, obj_px, 2).cpu().detach().numpy()
     grad = grad[0, ...]
@@ -227,6 +236,20 @@ def decoder_output_grad_hook(grad):
         print('')
     else:
         writer.add_figure('grad_visualization/decoder_out', fig, step)
+
+def grad_nan_hook(name, grad):
+    sum = torch.isnan(grad).sum()
+    if torch.isnan(grad).sum() == 0:
+        return
+    log('!! ===== NAN FOUND IN GRAD ====')
+    log(name)
+    log('shape',grad.shape,', total nans:', sum )
+    log('location', torch.isnan(grad).nonzero())
+    log('===============================')
+
+    telegram_yonk('We found a nan in grad')
+
+
 
 def z_attr_grad_hook(grad):
     step = RunManager.global_step
@@ -257,7 +280,7 @@ def z_attr_grad_hook(grad):
     else:
         writer.add_figure('grad_visualization/z_attr', fig, step)
 
-def nan_hunter(name, **kwargs):
+def nan_hunter(hunter_name, **kwargs):
     step = RunManager.global_step
 
     nan_detected = False
@@ -274,18 +297,23 @@ def nan_hunter(name, **kwargs):
     if not nan_detected: return
 
 
-    print('======== NAN DETECTED in %s =======' % name)
-
-    print('global_step', step)
+    log('======== NAN DETECTED in %s =======' % RunManager.run_name)
+    log('Nan Hunter Name', hunter_name)
+    log('global_step', step)
     for name, value in non_tensors.items():
-        print(name, ":", value)
+        log(name, value)
 
     for name, tensor in tensors.items():
-        print(name, ':\n', tensor)
+        tensor_size = tensor.nelement()
+        tensor = torch.isnan(tensor).sum().item()
+        log('{} NaN/total elements'.format(name), '{} / {}'.format(tensor, tensor_size))
 
-    print('======== END OF NAN DETECTED =======')
+    log('======== END OF NAN DETECTED =======')
+
+    telegram_yonk('NaN Detected!! {}, step: {}'.format(RunManager.run_name, RunManager.global_step))
 
     raise AssertionError('NAN Detected by Nan detector')
+
 
 
 

@@ -1,6 +1,7 @@
 import torch
 from torch.utils import data as torch_data
 from spair import config as cfg
+from spair.logging import *
 instance = None
 
 class RunManager():
@@ -10,7 +11,9 @@ class RunManager():
     device = None
     writer = None
     run_args = None
-    def __init__(self, run_name, dataset, device, writer, run_args, cfg):
+    run_name = None
+
+    def __init__(self, run_name, dataset, device, writer, run_args):
         global instance
         assert instance is None, 'There is already a RunManager running, please do not re-initialize it'
         instance = self
@@ -20,10 +23,13 @@ class RunManager():
         RunManager.device = device
         RunManager.writer = writer
         RunManager.run_args = run_args
-        RunManager.cfg = cfg
+
+
+        self.__write__meta_data()
 
     def iterate_data(self, max_iter = 20000):
         ''' Dataset iterator class '''
+        global_step_offset = RunManager.global_step
         for epoch in range(100000):
             dataloader = torch_data.DataLoader(RunManager._dataset,
                                                batch_size=cfg.BATCH_SIZE,
@@ -32,11 +38,22 @@ class RunManager():
                                                drop_last=True,
                                                )
             for batch_idx, batch in enumerate(dataloader):
-                global_step = epoch * len(dataloader) + batch_idx
+                global_step = epoch * len(dataloader) + batch_idx + global_step_offset
                 RunManager.global_step = global_step
                 if global_step > max_iter:
                     return
                 yield global_step, batch
+
+    def __write__meta_data(self):
+
+        log('===== %s ====' % RunManager.run_name)
+        log('===== run config ======')
+        args = RunManager.run_args
+        for args_name, args_val in vars(args).items():
+            log(args_name, args_val)
+        log('======================= ')
+
+
 
 
 def get_run_manager_session():

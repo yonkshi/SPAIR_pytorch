@@ -9,7 +9,7 @@ def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
 
 
     image_size = cfg.INPUT_IMAGE_SHAPE[-1]
-    batch_size = cfg.BATCH_SIZE
+    batch_size = z_where.shape[0]
 
     # clean up z_where to match ground_truth
     z_where *= image_size
@@ -21,8 +21,6 @@ def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
     z_where[..., 2:] += z_where[..., :2]
     ground_truth_bbox[..., 2:] += ground_truth_bbox[..., :2]
 
-
-
     # masking away output unused bbox
     z_pres_rounded = torch.round(z_pres)
     z_where_masked = z_where * z_pres_rounded
@@ -30,14 +28,16 @@ def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
     # mask away unused bbox in label
     # TODO Mask away unused bbox in label
 
-    bbox_ious = batch_jaccard(z_where, ground_truth_bbox)
+    bbox_ious = batch_jaccard(z_where_masked, ground_truth_bbox)
 
     # choose the best output bbox to match label bbox
+    bbox_debug = bbox_ious.view(1,11,11,-1).numpy()[0]
     bbox_iou = torch.max(bbox_ious, dim=1)[0] # [0] because max returns both max and argmax
     bbox_iou = bbox_iou.unsqueeze(-1).cpu()
 
     # Setup AP @ [0.1:0.1:0.9]
-    ap_scale = torch.arange(0.1, 1.0, 0.1)
+    # ap_scale = torch.arange(0.1, 1.0, 0.1)
+    ap_scale = torch.tensor([0.0, 0.5], dtype=torch.float)
     scaled_iou = torch.clamp((bbox_iou - ap_scale) / (1 - ap_scale), min=0, max=1)
 
     # find the mean average precision (mAP)

@@ -4,3 +4,5 @@ logs*/
 logs/*
 
 spair/data/*
+data/
+__pycache__/

@@ -215,6 +215,7 @@ def clamped_sigmoid(logit, use_analytical=False):
     '''
     # logit = torch.clamp(logit, -10, 10)
     if use_analytical:
+        logit = torch.clamp(logit, -10, 10)
         return 1 / ((-logit).exp() + 1)
 
     return torch.sigmoid(torch.clamp(logit, -10, 10))

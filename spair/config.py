@@ -1,4 +1,19 @@
 import os
+from enum import Enum
+
+# Run Related Config
+GPU = True
+Z_Prior = Enum('Z_Prior', 'NONE UNIFORM ORIGINAL')
+SpairType = Enum('SpairType', 'SEQUENTIAL CONV')
+class RunConfig():
+    def __init__(self, gpu=True, z_prior=Z_Prior.NONE, spair_type=SpairType.SEQUENTIAL, ):
+        self.gpu = gpu
+        self.z_prior = z_prior
+        self.spair_type = spair_type
+        pass
+
+
+
 
 BATCH_SIZE = 32
 INPUT_IMAGE_SHAPE = [1, 128, 128] # originally 128 128 TODO change me back
@@ -45,8 +60,8 @@ MIN_HW = 0.0
 PRIORS = {
     'cy_logit':[0., 1.],
     'cx_logit':[0., 1.],
-    'height_logit':[-0.9542425094, 0.5], # Larger prior for 28 x 28
-    'width_logit':[-0.9542425094, 0.5],
+    'height_logit':[3., 0.5], # Larger prior for 28 x 28
+    'width_logit':[3., 0.5],
     'attr':[0., 1.],
     'depth_logit':[0., 1.],
 }
