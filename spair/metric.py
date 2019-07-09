@@ -5,6 +5,8 @@ from spair import config as cfg
 def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
     '''
     Computes the mean average precision (based on COCO dataset definition)
+
+    WARNING: Assumes z_where and ground_truth_box both contain localization information in [X, Y, W, H] Format
     '''
 
 

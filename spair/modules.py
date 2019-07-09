@@ -115,8 +115,9 @@ class LatentConv(Module):
     '''
     Special Convolution Network for learning latent variables
     '''
-    def __init__(self, in_channels, out_channels, additional_out_channels = None, neighbourhood = 1):
+    def __init__(self, in_channels, out_channels, additional_out_channels = None):
         super().__init__()
+        neighbourhood = RunManager.run_args.conv_neighbourhood
         self.kernel_size = (neighbourhood - 1) * 2 + 1
         self.input_pad = nn.ZeroPad2d(neighbourhood - 1)
         self.out_split_size = None

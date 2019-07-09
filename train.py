@@ -167,7 +167,9 @@ def continue_training(args):
 
 def parse_args(run_log_path):
     parser = argparse.ArgumentParser()
+    # GPU
     parser.add_argument('--gpu', help='Enable GPU use', action='store_true')
+    # Core Algorithm config
     parser.add_argument('--no_z_prior', help='Enable GPU use', action='store_true')
     parser.add_argument('--uniform_z_prior', help='Enable GPU use', action='store_true')
     parser.add_argument('--conv_spair', help='Uses convolutional SPAIR rather than sequential SPAIR',
@@ -175,16 +177,20 @@ def parse_args(run_log_path):
     parser.add_argument('--conv_neighbourhood', type=int, default=1,
                         help='kernel size of conv_spair')
 
+
+
+    # Dataset config
     parser.add_argument('--dataset_subset', type=str, default='constant',
                         choices=['constant', 'full', '1-5'], help='name of the dataset')
-
 
     parser.add_argument('--dataset_filename', type=str, default='scattered_mnist_128x128_obj14x14.hdf5',
                         help='name of the dataset')
 
+    # Logging config
     parser.add_argument('--log_path', type=str, default=run_log_path,
                         help='path of to store logging and checkpoints')
 
+    # Checkpoint restoration
     parser.add_argument('--continue_from', type=str, default="",
                         help='name of run to continue trainig from')
 
