@@ -25,6 +25,12 @@ class Backbone(Module):
         n_in_channels = input_shape[0] # Assuming pytorch style [C, H, W] tensor, ignoring batch
         self.input_shape = input_shape
 
+
+        if RunManager.run_args.use_uber_trick:
+            n_in_channels = n_in_channels + 2
+            self._build_explicit_coords_channels()
+
+
         self.net = self._build_backbone(n_in_channels, n_out_channels)
 
         self.padding, self.n_grid_cells, self.grid_cell_size = self._build_receptive_field_padding()
@@ -37,9 +43,17 @@ class Backbone(Module):
         '''
         t = torch.rand(1, *cfg.INPUT_IMAGE_SHAPE)
         # out = self.forward(t)
-        out = self.__call__(t)
+        out = self.__call__(t, use_cpu=True)
         out_shape = out.shape[1:] # remove the batch
         return out_shape
+
+    def _build_explicit_coords_channels(self):
+        _, height, width = self.input_shape
+        device = RunManager.device
+        x = torch.arange(width, dtype=torch.float).expand(width, height,).unsqueeze(0) # adds channel dim
+        y = torch.arange(height, dtype=torch.float).unsqueeze(-1).expand(height, width).unsqueeze(0) # adds
+        self.coords_chans = torch.cat([x, y], dim=0).unsqueeze(0).to(device) # Adds batch dim
+
 
     def _build_backbone(self, n_in_channels, n_out_channels):
         '''Builds the convnet of the backbone'''
@@ -105,7 +119,15 @@ class Backbone(Module):
 
         return nn.ZeroPad2d((pad_left, pad_right, pad_top, pad_bottom)), n_grid_cells, grid_cell_size
 
-    def forward(self, x):
+    def forward(self, x, use_cpu=False):
+        if RunManager.run_args.use_uber_trick:
+            batch_size, c, h, w = x.shape
+            coords_channel = self.coords_chans.expand(batch_size, 2, h, w)
+            if use_cpu:
+                coords_channel = coords_channel.cpu()
+            x = torch.cat([x, coords_channel], dim=1)
+
+
         padded_x = self.padding(x)
         # debug_tools.plot_stn_input_and_out(padded_x)
         out = self.net(padded_x)
@@ -126,16 +148,16 @@ class LatentConv(Module):
             self.out_split_size = out_channels
             out_channels = out_channels + additional_out_channels
 
-
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=self.kernel_size)
-        self.conv2 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
+        self.conv = nn.Sequential(
+            nn.ZeroPad2d(neighbourhood - 1),
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=self.kernel_size),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
+        )
 
     def forward(self, x):
         #PAD input
-        padded_input = self.input_pad(x)
-        conv1 = self.conv1(padded_input)
-        out = self.conv2(conv1)
-
+        out = self.conv(x)
         if self.out_split_size is not None:
             return out[:, :self.out_split_size, ...], out[:, self.out_split_size:, ...]
         return out
@@ -147,16 +169,16 @@ class LatentDeconv(Module):
 
     def __init__(self, in_channels):
         super().__init__()
-        self.deconv1 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
-        self.deconv2 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
-        self.deconv_out = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1)
-
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
+        )
     def forward(self, x):
         # PAD input
-
-        deconv1 = self.deconv1(x)
-        deconv2 = self.deconv2(deconv1)
-        out = self.deconv_out(deconv2)
+        out = self.conv(x)
 
         return out
 

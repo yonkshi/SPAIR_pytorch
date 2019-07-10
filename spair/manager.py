@@ -27,8 +27,9 @@ class RunManager():
 
         self.__write__meta_data()
 
-    def iterate_data(self, max_iter = 20000):
+    def iterate_data(self):
         ''' Dataset iterator class '''
+        max_iter = RunManager.run_args.max_iter
         global_step_offset = RunManager.global_step
         for epoch in range(100000):
             dataloader = torch_data.DataLoader(RunManager._dataset,

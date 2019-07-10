@@ -7,7 +7,7 @@ run:
 	python3 train.py
 
 run_gpu:
-	python3 train.py --gpu --conv_spair
+	python3 train.py --gpu
 
 sync:
 	rsync -arvu --exclude=logs_v2/ --exclude=logs/ --exclude=spair/data/* --exclude=data/* -e ssh . naturalreaders:spair_pytorch
@@ -18,8 +18,15 @@ tb:
 
 overnight:
 	python3 train.py --gpu || true
-	python3 train.py --gpu --no_z_prior || true
-	python3 train.py --gpu --uniform_z_prior || true
-	python3 train.py --gpu --conv_spair || true
-	python3 train.py --gpu --no_z_prior --conv_spair || true
-	python3 train.py --gpu --uniform_z_prior --conv_spair || true
+	python3 train.py --gpu --z_pres none  || true
+	python3 train.py --gpu --z_pres uniform || true
+	python3 train.py --gpu --original_spair  || true
+	python3 train.py --gpu --original_spair  --z_pres none || true
+	python3 train.py --gpu --original_spair  --z_pres uniform || true
+
+test_new_features:
+	python3 train.py --gpu --use_z_where_decoder || true
+	python3 train.py --gpu --use_uber_trick || true
+	python3 train.py --gpu --use_conv_z_attr || true
+	python3 train.py --gpu --z_pres none || true
+	python3 train.py --gpu --z_pres uniform || true

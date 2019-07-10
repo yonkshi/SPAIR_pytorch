@@ -40,7 +40,14 @@ def main():
 
     run_manager = RunManager(run_name=run_name, dataset=data, device=device, writer=writer, run_args=args)
 
-    train(run_manager)
+    if not cfg.IS_LOCAL:
+        try:
+            train(run_manager)
+        except Exception as e:
+            telegram_yonk('An error had occured:{}, step:{}'.format(run_name, RunManager.global_step) )
+            raise e
+    else:
+        train(run_manager)
 
 def train(run_manager):
 
@@ -54,11 +61,12 @@ def train(run_manager):
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
 
-    if run_manager.run_args.conv_spair:
+    if run_manager.run_args.original_spair:
+        spair_net = Spair(image_shape)
+    else:
         spair_net = ConvSpair(image_shape)
         print('Running with CONV spair')
-    else:
-        spair_net = Spair(image_shape)
+
 
     if continue_training(run_manager.run_args) is not None:
         model_dict, global_step = continue_training(run_manager.run_args)
@@ -167,16 +175,25 @@ def continue_training(args):
 
 def parse_args(run_log_path):
     parser = argparse.ArgumentParser()
-    # GPU
+    # Run config
     parser.add_argument('--gpu', help='Enable GPU use', action='store_true')
+    parser.add_argument('--max_iter', type=int, default=20000,
+                        help='max number of iterations to train on')
+
     # Core Algorithm config
-    parser.add_argument('--no_z_prior', help='Enable GPU use', action='store_true')
-    parser.add_argument('--uniform_z_prior', help='Enable GPU use', action='store_true')
-    parser.add_argument('--conv_spair', help='Uses convolutional SPAIR rather than sequential SPAIR',
+    parser.add_argument('--z_pres', type=str, default='original',
+                        choices=['original_prior', 'no_prior', 'uniform_prior', 'self_attention'], help='name of the dataset')
+
+    parser.add_argument('--original_spair', help='Uses sequential SPAIR rather than convolutional SPAIR',
                         action='store_true')
+
     parser.add_argument('--conv_neighbourhood', type=int, default=1,
                         help='kernel size of conv_spair')
-    parser.add_argument('--use_z_where_decoder', help='z_where uses a decoder', action='store_true')
+    parser.add_argument('--use_z_where_decoder', help='Use a decoder to model z_where better', action='store_true')
+
+    parser.add_argument('--use_uber_trick', help='Attaches explicit x,y information to input image for better localization', action='store_true')
+
+    parser.add_argument('--use_conv_z_attr', help='Use a conv network to learn z_attr for faster learning', action='store_true')
 
 
     # Dataset config

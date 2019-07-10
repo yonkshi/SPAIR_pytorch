@@ -28,10 +28,10 @@ DEFAULT_BACKBONE_TOPOLOGY = [
     dict(filters=128, kernel_size=1, stride=1),
 ]
 CONV_OBJECT_ENCODER_TOPOLOGY = [ # Decoder is the opposite topology
-    dict(filters=32, kernel_size=4, stride=2), # (32, 13, 13)
-    dict(filters=32, kernel_size=3, stride=2), # (32, 5, 5)
-    dict(filters=32, kernel_size=3, stride=2), # (32, 2, 2)
-    dict(filters=32, kernel_size=1, stride=1), # (32, 2, 2)
+    dict(filters=16, kernel_size=4, stride=2), # (32, 13, 13)
+    dict(filters=16, kernel_size=4, stride=2), # (32, 5, 5)
+    dict(filters=16, kernel_size=2, stride=1), # (32, 5, 5)
+    dict(filters=16, kernel_size=1, stride=1), # (32, 2, 2)
 ]
 
 N_BACKBONE_FEATURES = 100

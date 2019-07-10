@@ -33,7 +33,6 @@ def mAP(z_where, z_pres, ground_truth_bbox, truth_bbox_digit_count):
     bbox_ious = batch_jaccard(z_where_masked, ground_truth_bbox)
 
     # choose the best output bbox to match label bbox
-    bbox_debug = bbox_ious.view(1,11,11,-1).numpy()[0]
     bbox_iou = torch.max(bbox_ious, dim=1)[0] # [0] because max returns both max and argmax
     bbox_iou = bbox_iou.unsqueeze(-1).cpu()
 

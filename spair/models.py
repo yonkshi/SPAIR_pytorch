@@ -67,7 +67,7 @@ class SpairBase(nn.Module):
 
         # TODO Temporary z_presence test
         # Disable z_presence prior
-        if self.run_args.no_z_prior:
+        if self.run_args.z_pres == 'none' or self.run_args.z_pres == 'self_attention':
             return KL
 
         # --- Object Presence KL ---
@@ -108,7 +108,7 @@ class SpairBase(nn.Module):
             prob = z_pres_prob[:, :, h, w]
 
             # TODO This is for testing uniform dist
-            if self.run_args.uniform_z_prior:
+            if self.run_args.z_pres == 'uniform':
                 p_z = torch.ones_like(prob) / HW
             else:
                 # Computing the prior, flatten tensors [Batch, 1]
@@ -224,8 +224,9 @@ class SpairBase(nn.Module):
         # --- Get object attributes using object encoder ---
 
         input_glimpses = stn(x, normalized_box, cfg.OBJECT_SHAPE)
-        flat_input_glimpses = input_glimpses.flatten(start_dim=1) # flatten
-        attr = self.object_encoder(flat_input_glimpses)
+        if not RunManager.run_args.use_conv_z_attr:
+            input_glimpses = input_glimpses.flatten(start_dim=1) # flatten
+        attr = self.object_encoder(input_glimpses)
         # attr = attr.view(-1, 2 * cfg.N_ATTRIBUTES)
         return input_glimpses, attr
 
@@ -643,12 +644,6 @@ class ConvSpair(SpairBase):
         if RunManager.run_args.use_z_where_decoder:
             self.z_where_decode_net = LatentDeconv(n_localization_latent)
 
-        # object attribute
-        n_attr_out = 2 * cfg.N_ATTRIBUTES
-        obj_dim = cfg.OBJECT_SHAPE[0]
-        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
-        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
-        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers = [256, 128])
 
         z_depth_in = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + cfg.N_BACKBONE_FEATURES
         self.z_depth_net = LatentConv(z_depth_in, 2, additional_out_channels = n_passthrough_features)
@@ -657,12 +652,27 @@ class ConvSpair(SpairBase):
         z_pres_in = z_depth_in + 1 # incorporated z_network out dim (1 dim)
         self.z_pres_net = LatentConv(z_pres_in, 1)
 
+
+        # object encoder
+        n_attr_out = 2 * cfg.N_ATTRIBUTES
+        obj_dim = cfg.OBJECT_SHAPE[0]
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        n_inp_shape = obj_dim * obj_dim * input_chan # flattening the 14 x 14 x 3 image
+        self.object_encoder = build_MLP(n_inp_shape, n_attr_out, hidden_layers = [256, 128])
+
         # object decoder
         input_chan = cfg.INPUT_IMAGE_SHAPE[0]
         decoded_dim = obj_dim * obj_dim * (input_chan+1) # [GrayScale + Alpha] or [RGB+A]
         self.object_decoder = build_MLP(cfg.N_ATTRIBUTES, decoded_dim, hidden_layers=[128, 256])
 
-        self.attn = Self_Attn(55)
+        if RunManager.run_args.use_conv_z_attr:
+            n_inp_shape = [input_chan, obj_dim , obj_dim ]  # flattening the 14 x 14 x 3 image
+            self.object_encoder = ObjectConvEncoder(n_inp_shape, n_attr_out)
+            self.object_decoder = ObjectConvDecoder(cfg.N_ATTRIBUTES, input_chan + 1) # alpha channel
+
+        if RunManager.run_args.z_pres == 'self_attention':
+            z_pres_input = n_backbone_features + cfg.N_ATTRIBUTES + 4 + 1 + n_passthrough_features
+            self.z_pres_self_attn = Self_Attn(z_pres_input)
 
     def _compute_latent_vars(self, x:torch.Tensor, backbone_features):
         _, H, W = self.feature_space_dim
@@ -713,12 +723,17 @@ class ConvSpair(SpairBase):
 
         # --- z_presence ---
         layer_inp = torch.cat([backbone_features, passthru_features, local_bbox, attr, depth], dim=1)
-        pres_logit = self.z_pres_net(layer_inp)
+        if RunManager.run_args.z_pres == 'self_attention':
+            pres_logit = self.z_pres_self_attn(layer_inp)
+        else:
+            pres_logit = self.z_pres_net(layer_inp)
+
         obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
 
         self.z_pres = obj_pres
         self.z_pres_prob = obj_pres_prob
         # test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
+
         debug_tools.nan_hunter('Main Loop',
                                normalized_box=bbox,
                                attr=attr,
@@ -744,6 +759,7 @@ class ConvSpair(SpairBase):
         if RunManager.run_args.use_z_where_decoder:
             z_where_samples = torch.cat([cy_logits, cx_logits, height_logits, width_logits], dim=1)
             z_where_decoded = self.z_where_decode_net(z_where_samples)
+            z_where_decoded = self._freeze_learning(z_where_decoded)
             cy_logits, cx_logits, height_logits, width_logits = torch.chunk(z_where_decoded, 4, dim=1)
 
         cell_y = clamped_sigmoid(cy_logits)  # single digit
@@ -781,7 +797,6 @@ class ConvSpair(SpairBase):
         xs = width * anchor_box_dim / image_width
 
         # box centre mapped with respect to full image
-        # TODO Check if XY are not YX when adding the offset!!!!!!!
         _, H, W = self.feature_space_dim
         h_offset = torch.arange(0, H, dtype=torch.float32,).unsqueeze(-1).expand_as(cell_y).to(RunManager.device)
         w_offset = torch.arange(0, W, dtype=torch.float32,).expand_as(cell_x).to(RunManager.device)
@@ -816,6 +831,7 @@ class ObjectConvEncoder(nn.Module):
         n_prev, h, w = input_size
         net = OrderedDict()
 
+        last = len(cfg.CONV_OBJECT_ENCODER_TOPOLOGY) - 1
         # Builds internal layers except for the last layer
         for i, layer in enumerate(cfg.CONV_OBJECT_ENCODER_TOPOLOGY):
             layer['in_channels'] = n_prev
@@ -827,24 +843,29 @@ class ObjectConvEncoder(nn.Module):
                 f = layer['out_channels']
 
             net['conv_%d' % i] = Conv2d(**layer)
-            net['act_%d' % i] = ReLU()
+
+            if i != last:
+                net['act_%d' % i] = ReLU()
             n_prev = f
 
         self.conv = Sequential(net)
-        self.out = nn.Linear(123, output_size)
+        self.out_net = nn.Linear(256, output_size)
 
     def forward(self, x):
         conv_out = self.conv(x)
         conv_out_flat = conv_out.flatten(start_dim=1)
-        return self.linear(conv_out_flat)
+        out = self.out_net(conv_out_flat)
+        return out
 
 class ObjectConvDecoder(nn.Module):
 
     def __init__(self, input_size, output_channel):
         super().__init__()
-        n_prev = input_size
+        n_prev = 16
         net = OrderedDict()
-        decoder_topo = cfg.CONV_OBJECT_ENCODER_TOPOLOGY.reverse()
+
+        last = len(cfg.CONV_OBJECT_ENCODER_TOPOLOGY) - 1
+        decoder_topo = cfg.CONV_OBJECT_ENCODER_TOPOLOGY[::-1] # Reverses list
         # Builds internal layers except for the last layer
         for i, layer in enumerate(decoder_topo):
             layer['in_channels'] = n_prev
@@ -857,18 +878,21 @@ class ObjectConvDecoder(nn.Module):
 
             net['conv_transposed_%d' % i] = nn.ConvTranspose2d(**layer)
 
+
             net['act_%d' % i] = ReLU()
             n_prev = f
-        net.pop()
 
+        net['out'] = nn.ConvTranspose2d(in_channels=f, out_channels=output_channel, kernel_size=3)
         self.conv = Sequential(net)
+        self.latent_to_conv = nn.Linear(input_size, 256)
 
 
     def forward(self, x):
-        conv_out = torch.tensor(self.conv(x) )
-        conv_out_flat = conv_out.flatten(start_dim=1)
 
-        return self.linear(conv_out_flat)
+        conv_in = self.latent_to_conv(x).view(-1, 16, 4, 4)
+        conv_out = self.conv(conv_in)
+
+        return conv_out
 
 class Self_Attn(nn.Module):
     """ Self attention Layer"""
