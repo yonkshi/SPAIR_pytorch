@@ -60,8 +60,8 @@ MIN_HW = 0.0
 PRIORS = {
     'cy_logit':[0., 1.],
     'cx_logit':[0., 1.],
-    'height_logit':[3., 0.5], # Larger prior for 28 x 28
-    'width_logit':[3., 0.5],
+    # 'height_logit':[3., 0.5], # Larger prior for 28 x 28, and this is now defined in run_args
+    # 'width_logit':[3., 0.5],
     'attr':[0., 1.],
     'depth_logit':[0., 1.],
 }

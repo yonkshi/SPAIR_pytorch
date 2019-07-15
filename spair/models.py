@@ -6,6 +6,7 @@ from torch.distributions.kl import kl_divergence
 from spair.modules import *
 from spair.manager import RunManager
 from spair.modules import Backbone, build_MLP
+from spair import flow_model as fnn
 
 
 class SpairBase(nn.Module):
@@ -27,6 +28,9 @@ class SpairBase(nn.Module):
         self.pixels_per_cell = tuple(int(i) for i in self.backbone.grid_cell_size) #[pixel_x, pixel_y]
 
         self.run_args = RunManager.run_args
+
+        # Loss is only used by masked autoregressive flow decoder
+        self.normalizing_flow_loss = 0
         print('model initialized')
 
     def forward(self, x):
@@ -49,9 +53,11 @@ class SpairBase(nn.Module):
 
         # self.attn(test_context)
 
-        kl_loss = self._compute_KL(self.z_pres, self.z_pres_prob)
+
         recon_x = self._render(self.z_attr, self.z_where, self.z_depth, self.z_pres, x)
+        kl_loss = self._compute_KL(self.z_pres, self.z_pres_prob)
         loss = self._build_loss(x, recon_x, kl_loss)
+
 
         return loss, recon_x, self.z_where, self.z_pres
 
@@ -62,12 +68,18 @@ class SpairBase(nn.Module):
             dist = self.dist[dist_name]
             prior = self.kl_priors[dist_name]
             kl_div = kl_divergence(dist, prior)
-            masked = z_pres * kl_div
+            if RunManager.run_args.z_pres == 'self_attention':
+                b, c, h, w = kl_div.shape
+                reshaped_kl = kl_div.view(b, c, h*w )
+                masked = torch.bmm(reshaped_kl, z_pres).view(b,c,h,w)
+
+            else:
+                masked = z_pres * kl_div
             KL[dist_name] = masked
 
         # TODO Temporary z_presence test
         # Disable z_presence prior
-        if self.run_args.z_pres == 'none' or self.run_args.z_pres == 'self_attention':
+        if self.run_args.z_pres == 'no_prior' or self.run_args.z_pres == 'self_attention':
             return KL
 
         # --- Object Presence KL ---
@@ -108,7 +120,7 @@ class SpairBase(nn.Module):
             prob = z_pres_prob[:, :, h, w]
 
             # TODO This is for testing uniform dist
-            if self.run_args.z_pres == 'uniform':
+            if self.run_args.z_pres == 'uniform_prior':
                 p_z = torch.ones_like(prob) / HW
             else:
                 # Computing the prior, flatten tensors [Batch, 1]
@@ -169,6 +181,14 @@ class SpairBase(nn.Module):
         for z_name, (mean, std) in cfg.PRIORS.items():
             dist = Normal(mean, std)
             self.kl_priors[z_name] = dist
+
+        # h and w priors are controlled configed by run_args for easier experimentation
+        mean, std = RunManager.run_args.hw_prior
+        dist = Normal(mean, std)
+        self.kl_priors['height_logit'] = dist
+
+        dist = Normal(mean, std)
+        self.kl_priors['width_logit'] = dist
 
     def _build_edge_element(self):
         '''
@@ -268,7 +288,7 @@ class SpairBase(nn.Module):
         if len(ret) == 1: return ret[0] # single element doesn't need unfolding
         return ret
 
-    def _render(self, z_attr, z_where, z_depth, z_pres, x):
+    def _render(self, z_attr, z_where, z_depth_in, z_pres_in, x):
         '''
         decoder + renderer function. combines the latent vars & bbox, feed into the decoder for each object and then
         :param z_attr:
@@ -282,50 +302,55 @@ class SpairBase(nn.Module):
 
         # ---- Now entering B x H x W x C realm, because we needed to merge B*H*W ----
 
-
         # Permute then flatten latent vars from [Batch, ?, H, W, ?] to [Batch * H * W, ?] so we can feed into STN
         z_where = to_H_W_C(z_where).contiguous().view(-1, 4)
 
-
         # flattening z depth and z presence for element-wise broadcasted multiplication later
-        z_depth = z_depth.view(-1, 1, 1)
-        z_pres = z_pres.view(-1, 1, 1)
+        z_depth_flat = z_depth_in.view(-1, 1, 1, 1)
+        z_pres_flat = z_pres_in.view(-1, 1, 1, 1)
         object_decoder_in = to_H_W_C(z_attr).contiguous().view(-1, cfg.N_ATTRIBUTES)
 
         # MLP to generate image
-        object_logits = self.object_decoder(object_decoder_in)
-
-
-        input_chan_w_alpha = cfg.INPUT_IMAGE_SHAPE[0] + 1
-        object_logits = object_logits.view(-1, px, px, input_chan_w_alpha) # [Batch * n_cells, pixels_w, pixels_h, channels]
-
+        obj_decoder_out = self.object_decoder(object_decoder_in)
+        input_chan = cfg.INPUT_IMAGE_SHAPE[0]
+        obj_decoder_out = obj_decoder_out.view(-1, px, px, input_chan + 1) # [Batch * n_cells, pixels_w, pixels_h, channels + alpha]
+        object_logits, alpha_logits = torch.split(obj_decoder_out, input_chan, dim=-1)
 
         # object_logits scale + bias mask
-        object_logits[:, :, :, :-1] *= cfg.OBJ_LOGIT_SCALE  #[B, 14, 14, 4] * [4]
-        object_logits[:, :, :, -1] *= cfg.ALPHA_LOGIT_SCALE
-        object_logits[:, :, :, -1] += cfg.ALPHA_LOGIT_BIAS
+        object_logits *= cfg.OBJ_LOGIT_SCALE  #[B, 14, 14, 4] * [4]
+        alpha_logits *= cfg.ALPHA_LOGIT_SCALE
+        alpha_logits += cfg.ALPHA_LOGIT_BIAS
         # TODO DELETE ME
         # z_attr.register_hook(lambda grad: debug_tools.z_attr_grad_hook(grad, self.writer, self.global_step))
         # object_logits.register_hook(lambda grad: debug_tools.grad_nan_hook('object_logits',grad))
         # TODO END DELETE ME
         objects = clamped_sigmoid(object_logits, use_analytical=True)
-        objects = objects.view(-1, px, px, input_chan_w_alpha)
+        alpha = clamped_sigmoid(alpha_logits, use_analytical=True)
+
         # TODO DELETE ME
         # objects.register_hook(lambda grad: debug_tools.grad_nan_hook('object after sigmoid',grad))
         # TODO END DELETE ME
-        # incorporate presence in alpha channel
-        objects[:,:,:,-1] *= z_pres.expand_as(objects[:,:,:,-1])
 
-        # importance manipulates how gradients scales, but does not nessasarily
-        importance = objects[:, :, :, -1] * z_depth.expand_as(objects[:,:,:,-1])
+        # incorporate presence in alpha channel
+        if RunManager.run_args.z_pres =='self_attention':
+            # QK dot V in softmax
+            alpha_reshaped = alpha.view(-1, H*W, px*px).permute(0,2,1) # Expand and move H*W to trailing dim
+            attended_alpha = torch.bmm(alpha_reshaped, z_pres_in)
+            reshaped_attended_alpha = attended_alpha.permute(0,2,1,).contiguous().view(-1, px, px, 1) # restore original shape
+
+            alpha = reshaped_attended_alpha
+        else:
+            alpha *= z_pres_flat.expand_as(alpha)
+
+        # importance manipulates how gradients scales
+        importance = alpha * z_depth_flat.expand_as(alpha)
         importance = torch.clamp(importance, min=0.01)
 
         # Merge importance to objects:
-        importance = importance[..., None] # add a trailing dim for concatnation
-        objects = torch.cat([objects, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
+        objects = torch.cat([objects, alpha, importance], dim=-1 ) # attach importance to RGBA, 5 channels to total
 
         # TODO debug output image, remove me later
-        debug_tools.plot_prerender_components(objects, z_pres, z_depth, z_where, x)
+        debug_tools.plot_prerender_components(objects, z_pres_flat, z_depth_flat, z_where, x)
 
         # ---- exiting B x H x W x C realm .... ----
 
@@ -382,8 +407,10 @@ class SpairBase(nn.Module):
             # print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
             self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )
 
-        loss = recon_loss + cfg.VAE_BETA * kl_loss
+
+        loss = recon_loss + cfg.VAE_BETA * kl_loss + self.normalizing_flow_loss
         # print('\n ===> total loss:', '{:.4f}'.format(loss.item()))
+        self.writer.add_scalar('losses/normalizing_flow', self.normalizing_flow_loss, self.global_step)
         self.writer.add_scalar('losses/total', loss, self.global_step)
 
 
@@ -433,8 +460,6 @@ class SpairBase(nn.Module):
 class Spair(SpairBase):
 
     def _compute_latent_vars(self, x, backbone_features):
-
-
 
         _, H, W = self.feature_space_dim
         context_mat = {}
@@ -508,7 +533,6 @@ class Spair(SpairBase):
             means = self.dist_param[dist_name]['mean']
             sigmas = self.dist_param[dist_name]['sigma']
             self.dist[dist_name] = Normal(loc=means, scale=sigmas)
-
 
     def _build_networks(self):
 
@@ -642,15 +666,20 @@ class ConvSpair(SpairBase):
         # bounding box
         self.z_where_net = LatentConv(n_backbone_features, n_localization_latent * 2, additional_out_channels = n_passthrough_features)
         if RunManager.run_args.use_z_where_decoder:
-            self.z_where_decode_net = LatentDeconv(n_localization_latent)
-
+            self.NF_planar_x = fnn.SingleZPlanarNF2d(num_flows=10, q_z_nn_dim=n_backbone_features)
+            self.NF_planar_y = fnn.SingleZPlanarNF2d(num_flows=10, q_z_nn_dim=n_backbone_features)
+            self.NF_planar_h = fnn.SingleZPlanarNF2d(num_flows=10, q_z_nn_dim=n_backbone_features)
+            self.NF_planar_w = fnn.SingleZPlanarNF2d(num_flows=10, q_z_nn_dim=n_backbone_features)
 
         z_depth_in = 4 + cfg.N_ATTRIBUTES + n_passthrough_features + cfg.N_BACKBONE_FEATURES
         self.z_depth_net = LatentConv(z_depth_in, 2, additional_out_channels = n_passthrough_features)
 
         # object presence
         z_pres_in = z_depth_in + 1 # incorporated z_network out dim (1 dim)
-        self.z_pres_net = LatentConv(z_pres_in, 1)
+        if RunManager.run_args.z_pres == 'self_attention':
+            self.z_pres_self_attn = Self_Attn(z_pres_in)
+        else:
+            self.z_pres_net = LatentConv(z_pres_in, 1)
 
 
         # object encoder
@@ -670,15 +699,11 @@ class ConvSpair(SpairBase):
             self.object_encoder = ObjectConvEncoder(n_inp_shape, n_attr_out)
             self.object_decoder = ObjectConvDecoder(cfg.N_ATTRIBUTES, input_chan + 1) # alpha channel
 
-        if RunManager.run_args.z_pres == 'self_attention':
-            z_pres_input = n_backbone_features + cfg.N_ATTRIBUTES + 4 + 1 + n_passthrough_features
-            self.z_pres_self_attn = Self_Attn(z_pres_input)
-
     def _compute_latent_vars(self, x:torch.Tensor, backbone_features):
         _, H, W = self.feature_space_dim
+
         self.training_wheel = exponential_decay(**cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
         self.writer.add_scalar('training_wheel', self.training_wheel, self.global_step)
-
         # s = torch.cuda.Stream()
         # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):
@@ -686,8 +711,8 @@ class ConvSpair(SpairBase):
         # test_context = torch.empty(self.batch_size, 55, H, W).to(self.device)
 
         # --- z_where ---
-        z_where, passthru_features = self.z_where_net(backbone_features)
-        local_bbox, bbox = self._build_box(z_where)
+        z_where, passthru_features, z_where_h  = self.z_where_net(backbone_features, return_h = True)
+        local_bbox, bbox = self._build_box(z_where, z_where_h)
         self.z_where = bbox
 
         # --- z_what ---
@@ -723,13 +748,13 @@ class ConvSpair(SpairBase):
 
         # --- z_presence ---
         layer_inp = torch.cat([backbone_features, passthru_features, local_bbox, attr, depth], dim=1)
+
         if RunManager.run_args.z_pres == 'self_attention':
             pres_logit = self.z_pres_self_attn(layer_inp)
         else:
             pres_logit = self.z_pres_net(layer_inp)
 
         obj_pres, obj_pres_prob = self._build_obj_pres(pres_logit)
-
         self.z_pres = obj_pres
         self.z_pres_prob = obj_pres_prob
         # test_context[..., h, w] = torch.cat((box, attr, depth), dim=-1)
@@ -741,7 +766,7 @@ class ConvSpair(SpairBase):
                                presence=obj_pres
                                )
 
-    def _build_box(self, z_where):
+    def _build_box(self, z_where, z_where_h):
         ''' Builds the bounding box from latent space z'''
 
         mean, std = latent_to_mean_std(z_where)
@@ -751,16 +776,52 @@ class ConvSpair(SpairBase):
         cy_mean, cx_mean, height_mean, width_mean = torch.chunk(mean, 4, dim=1)
         cy_std, cx_std, height_std, width_std = torch.chunk(std, 4, dim=1)
 
-        cy_logits = self._sample_z(cy_mean, cy_std, 'cy_logit')
-        cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit')
-        height_logits = self._sample_z(height_mean, height_std, 'height_logit')
-        width_logits = self._sample_z(width_mean, width_std, 'width_logit')
-
         if RunManager.run_args.use_z_where_decoder:
-            z_where_samples = torch.cat([cy_logits, cx_logits, height_logits, width_logits], dim=1)
-            z_where_decoded = self.z_where_decode_net(z_where_samples)
-            z_where_decoded = self._freeze_learning(z_where_decoded)
-            cy_logits, cx_logits, height_logits, width_logits = torch.chunk(z_where_decoded, 4, dim=1)
+            cy_logits, log_q_y = self._sample_z(cy_mean, cy_std, 'cy_logit', save_dist=False, log_prob=True)
+            cx_logits, log_q_x = self._sample_z(cx_mean, cx_std, 'cx_logit', save_dist=False, log_prob=True)
+            height_logits, log_q_h = self._sample_z(height_mean, height_std, 'height_logit', save_dist=False,
+                                                    log_prob=True)
+            width_logits, log_q_w = self._sample_z(width_mean, width_std, 'width_logit', save_dist=False, log_prob=True)
+
+            def kl_loss(log_q_z, zk, log_det_jacobian):
+                p_zk = -0.5 * zk * zk
+                kl = (log_q_z - p_zk).sum(dim=[-1,-2])
+                loss = kl - log_det_jacobian.sum(dim=[-1,-2])
+                mean_loss = loss.mean()
+                return mean_loss
+
+
+            cx_logits, lgj_x = self.NF_planar_x(cx_logits, z_where_h)
+            x_loss = kl_loss(log_q_x, cx_logits, lgj_x)
+
+            cy_logits, lgj_y = self.NF_planar_x(cy_logits, z_where_h)
+            y_loss = kl_loss(log_q_y, cy_logits, lgj_y)
+
+            height_logits, lgj_h = self.NF_planar_x(height_logits, z_where_h)
+            h_loss = kl_loss(log_q_h, height_logits, lgj_h)
+
+            width_logits, lgj_w = self.NF_planar_x(width_logits, z_where_h)
+            w_loss = kl_loss(log_q_w, width_logits, lgj_w)
+
+            normalizing_flow_loss = (x_loss + y_loss + h_loss + w_loss)
+
+            # cxy_logits, log_jacob_xy = self.z_where_xy_decode(torch.cat([cy_logits, cx_logits], dim=1))
+            # cy_logits, cx_logits = cxy_logits.chunk(2, dim=1)
+            # hw_logits, log_jacob_hw = self.z_where_hw_decode(torch.cat([height_logits, width_logits], dim=1))
+            # height_logits, width_logits = hw_logits.chunk(2, dim=1)
+            # width_logits, log_jacob_w = self.z_where_w_decode(width_logits)
+            # self.autoregressive_loss = -log_jacob_xy.mean() - log_jacob_hw.mean()
+            # cy_logits, cx_logits, height_logits, width_logits = torch.chunk(z_where_decoded, 4, dim=1)
+
+            # TODO Important freeze learning
+
+            cx_logits, cy_logits, height_logits, width_logits, self.normalizing_flow_loss = \
+                self._freeze_learning(cx_logits, cy_logits, height_logits, width_logits, normalizing_flow_loss )
+        else:
+            cy_logits = self._sample_z(cy_mean, cy_std, 'cy_logit')
+            cx_logits = self._sample_z(cx_mean, cx_std, 'cx_logit')
+            height_logits = self._sample_z(height_mean, height_std, 'height_logit')
+            width_logits= self._sample_z(width_mean, width_std, 'width_logit')
 
         cell_y = clamped_sigmoid(cy_logits)  # single digit
         cell_x = clamped_sigmoid(cx_logits)
@@ -810,7 +871,7 @@ class ConvSpair(SpairBase):
 
         return box, normalized_box
 
-    def _sample_z(self, mean, var, name):
+    def _sample_z(self, mean, var, name, save_dist = True, log_prob = False):
         '''
         Performs the sampling step in VAE and stores the distribution for KL computation
         :param mean:
@@ -820,8 +881,11 @@ class ConvSpair(SpairBase):
         '''
 
         dist = Normal(loc=mean, scale=var)
-        self.dist[name] = dist
+        if save_dist:
+            self.dist[name] = dist
         sampled = dist.rsample()
+        if log_prob:
+            return sampled, dist.log_prob(sampled)
         return sampled
 
 class ObjectConvEncoder(nn.Module):
@@ -895,7 +959,7 @@ class ObjectConvDecoder(nn.Module):
         return conv_out
 
 class Self_Attn(nn.Module):
-    """ Self attention Layer"""
+    """ Self attention Layer without value look up (replace with alpha channel during rendering)"""
 
     def __init__(self, in_dim):
         super(Self_Attn, self).__init__()
@@ -920,13 +984,16 @@ class Self_Attn(nn.Module):
         proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
         proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
         energy = torch.bmm(proj_query, proj_key)  # transpose check
-        attention = self.softmax(energy)  # BX (N) X (N)
-        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
+        attention = self.softmax(energy).permute(0, 2, 1)  # BX (N) X (N)
+        # proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
 
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
 
-        return out, attention
+        # out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        # out = out.view(m_batchsize, C, width, height)
+
+        # TODO Temporary sol
+        # out_tmp = out.sum(dim=1, keepdim=True)
+        return attention
 
 
 

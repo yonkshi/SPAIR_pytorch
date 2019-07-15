@@ -25,11 +25,9 @@ class Backbone(Module):
         n_in_channels = input_shape[0] # Assuming pytorch style [C, H, W] tensor, ignoring batch
         self.input_shape = input_shape
 
-
         if RunManager.run_args.use_uber_trick:
             n_in_channels = n_in_channels + 2
             self._build_explicit_coords_channels()
-
 
         self.net = self._build_backbone(n_in_channels, n_out_channels)
 
@@ -60,23 +58,20 @@ class Backbone(Module):
 
         n_prev = n_in_channels
         net = OrderedDict()
-
         # Builds internal layers except for the last layer
         for i, layer in enumerate(self.topology):
             layer['in_channels'] = n_prev
-
-            if 'filters' in layer.keys():
-                f = layer.pop('filters')
-                layer['out_channels'] = f #rename
-            else:
-                f = layer['out_channels']
+            layer['out_channels'] = layer.pop('filters')
 
             net['conv_%d' % i] = Conv2d(**layer)
             net['act_%d' % i] = ReLU()
-            n_prev = f
+            n_prev = layer['out_channels']
+
 
         # Builds the final layer
-        net['conv_out'] = Conv2d(in_channels=f, out_channels=n_out_channels, kernel_size=1, stride=1)
+        if RunManager.run_args.backbone_self_attention:
+            net['conv_out_attn'] = SelfAttention(n_prev)
+        net['conv_out'] = Conv2d(in_channels=n_prev, out_channels=n_out_channels, kernel_size=1, stride=1)
 
         return Sequential(net)
 
@@ -148,19 +143,34 @@ class LatentConv(Module):
             self.out_split_size = out_channels
             out_channels = out_channels + additional_out_channels
 
-        self.conv = nn.Sequential(
+        self.conv_h= nn.Sequential(
             nn.ZeroPad2d(neighbourhood - 1),
             nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=self.kernel_size),
+        )
+        self.conv = nn.Sequential(
             nn.ReLU(),
             nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1)
         )
 
-    def forward(self, x):
+
+    def forward(self, x, return_h = False):
         #PAD input
-        out = self.conv(x)
+        out_h = self.conv_h(x)
+        out = self.conv(out_h)
+        out_arr = [out]
+        # split
         if self.out_split_size is not None:
-            return out[:, :self.out_split_size, ...], out[:, self.out_split_size:, ...]
-        return out
+            out_arr = [out[:, :self.out_split_size, ...], out[:, self.out_split_size:, ...]]
+
+        # include h layer (for normalizing flow computation)
+        if return_h:
+            out_arr.append(out_h)
+
+        # unwrap the
+        if len(out_arr) == 1:
+            out_arr = out_arr[0]
+
+        return out_arr
 
 class LatentDeconv(Module):
     '''
@@ -180,6 +190,41 @@ class LatentDeconv(Module):
         # PAD input
         out = self.conv(x)
 
+        return out
+
+class SelfAttention(nn.Module):
+    """ Self attention Layer"""
+
+    def __init__(self, in_dim):
+        super().__init__()
+        self.chanel_in = in_dim
+
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+        self.softmax = nn.Softmax(dim=-1)  #
+
+    def forward(self, x):
+        """
+            inputs :
+                x : input feature maps( B X C X W X H)
+            returns :
+                out : self attention value + input feature
+                attention: B X N X N (N is Width*Height)
+        """
+        m_batchsize, C, width, height = x.size()
+        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
+        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
+        energy = torch.bmm(proj_query, proj_key)  # transpose check
+        attention = self.softmax(energy)  # BX (N) X (N)
+        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
+
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(m_batchsize, C, width, height)
+
+        out = out + x
         return out
 
 def compute_backbone_feature_shape(backbone):

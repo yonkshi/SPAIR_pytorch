@@ -18,11 +18,12 @@ tb:
 
 overnight:
 	python3 train.py --gpu || true
-	python3 train.py --gpu --z_pres none  || true
-	python3 train.py --gpu --z_pres uniform || true
+	python3 train.py --gpu || true
+	python3 train.py --gpu --z_pres no_prior  || true
+	python3 train.py --gpu --z_pres uniform_prior || true
 	python3 train.py --gpu --original_spair  || true
-	python3 train.py --gpu --original_spair  --z_pres none || true
-	python3 train.py --gpu --original_spair  --z_pres uniform || true
+	python3 train.py --gpu --original_spair  --z_pres no_prior || true
+	python3 train.py --gpu --original_spair  --z_pres uniform_prior || true
 
 test_new_features:
 	python3 train.py --gpu --use_z_where_decoder || true

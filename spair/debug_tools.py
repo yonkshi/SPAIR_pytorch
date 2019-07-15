@@ -40,7 +40,7 @@ def benchmark(name='', print_benchmark=True):
     now = time.time()
     diff = now - BENCHMARK_INIT_TIME
     BENCHMARK_INIT_TIME = now
-    if print_benchmark: print('{}: {:.4f} '.format(name, diff))
+    if print_benchmark: print('{} time: {:.4f} seconds'.format(name, diff))
     return diff
 
 def torch2npy(t:torch.Tensor, reshape=False):
@@ -67,6 +67,10 @@ def plot_prerender_components(obj_vec, z_pres, z_depth, bounding_box, input_imag
     obj_vec = np.concatenate(obj_vec, axis=-3) # concat h
     obj_vec = np.concatenate(obj_vec, axis=-2) # concat w
     # z_pres = z_pres.view(32, 11, 11, 1)
+    if RunManager.run_args.z_pres == 'self_attention':
+        batch_size, hw, _ = z_pres.shape
+        unit = torch.ones([batch_size, 1, hw]).to(RunManager.device)
+        z_pres = torch.bmm(unit, z_pres).view(batch_size*hw).contiguous()
     z_pres = torch2npy(z_pres, reshape=True)
     z_depth = torch2npy(z_depth, reshape=True)
     bounding_box = torch2npy(bounding_box, reshape=True)

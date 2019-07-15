@@ -77,60 +77,23 @@ def train(run_manager):
     params = spair_net.parameters()
     spair_optim = optim.Adam(params, lr=1e-4)
     benchmark_time = time.time()
-
+    debug_tools.benchmark_init()
     # Main training loop
     for global_step, batch in run_manager.iterate_data():
 
         x_image, y_bbox, y_digit_count = batch
-
         x_image = x_image.to(device)
         y_bbox = y_bbox.to(device)
         y_digit_count = y_digit_count.to(device)
 
-
         log('Iteration', global_step)
+        debug_tools.benchmark_init()
         spair_optim.zero_grad()
         loss, out_img, z_where, z_pres = spair_net(x_image)
-        log('===> loss:', '{:.4f}'.format(loss.item()))
+        # log('===> loss:', '{:.4f}'.format(loss.item()))
 
         loss.backward(retain_graph = True)
-
-        # TODO Tracing grads
-        # named_grads = {}
-        # cloned_weights = {}
-        # for module_name, module in spair_net.named_children():
-        #     param_name, param = list(module.named_parameters())[-2]
-        #     if(module_name == 'attn'): continue;
-        #     module_name += ' ' + param_name
-        #     named_grads[module_name] = param.grad.clone()
-        #     cloned_weights[module_name] = param.clone()
-        #
-        # try:
-        #     debug_tools.nan_hunter('gradients', **named_grads)
-        # except AssertionError:
-        #     print('oh no')
-        #     import ipdb;
-        #     ipdb.set_trace()
-
         spair_optim.step()
-
-        # TODO Tracing grads
-        # named_weights = {}
-        # for module_name, module in spair_net.named_children():
-        #     if (module_name == 'attn'): continue;
-        #     param = list(module.parameters())[-2]
-        #     named_weights[module_name + '_weights'] = param
-        # try:
-        #     debug_tools.nan_hunter('weights', **named_weights)
-        # except AssertionError:
-        #     import ipdb; ipdb.set_trace()
-
-
-        # logging stuff
-        image_out = out_img[0]
-        image_in = x_image[0]
-        combined_image = torch.cat([image_in, image_out], dim=2)
-        writer.add_image('SPAIR input_output', combined_image,  global_step)
 
         # Log average precision metric every 5 step after 1000 iterations (when trainig_wheel is off)
         if global_step > 1000 and global_step % 5 == 0: # iteration > 1000 and
@@ -141,9 +104,14 @@ def train(run_manager):
             count_accuracy = metric.object_count_accuracy(z_pres, y_digit_count)
             writer.add_scalar('accuracy/object_count_accuracy', count_accuracy, global_step)
 
-
         # Save model
         if global_step % 100 == 0 and global_step > 0:
+            # logging stuff
+            image_out = out_img[0]
+            image_in = x_image[0]
+            combined_image = torch.cat([image_in, image_out], dim=2)
+            writer.add_image('SPAIR input_output', combined_image, global_step)
+
             duration = time.time() - benchmark_time
             writer.add_scalar('misc/time_taken_per_100_batches', duration, global_step)
             check_point_name = 'step_%d.pkl' % global_step
@@ -152,9 +120,11 @@ def train(run_manager):
             save_path = os.path.join(run_log_path, 'checkpoints', check_point_name)
             torch.save(spair_net.state_dict(), save_path)
             benchmark_time = time.time()
+
         # print('=================\n\n')
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
+
 
     telegram_yonk('Run completed! name:{}'.format(run_manager.run_name))
 
@@ -177,11 +147,11 @@ def parse_args(run_log_path):
     parser = argparse.ArgumentParser()
     # Run config
     parser.add_argument('--gpu', help='Enable GPU use', action='store_true')
-    parser.add_argument('--max_iter', type=int, default=20000,
+    parser.add_argument('--max_iter', type=int, default=10000,
                         help='max number of iterations to train on')
 
     # Core Algorithm config
-    parser.add_argument('--z_pres', type=str, default='original',
+    parser.add_argument('--z_pres', type=str, default='original_prior',
                         choices=['original_prior', 'no_prior', 'uniform_prior', 'self_attention'], help='name of the dataset')
 
     parser.add_argument('--original_spair', help='Uses sequential SPAIR rather than convolutional SPAIR',
@@ -195,6 +165,10 @@ def parse_args(run_log_path):
 
     parser.add_argument('--use_conv_z_attr', help='Use a conv network to learn z_attr for faster learning', action='store_true')
 
+    parser.add_argument('--hw_prior', type=float, default=[3., 0.5], nargs=2,
+                        help='z prior for the height and width of bbox')
+
+    parser.add_argument('--backbone_self_attention', help='Enable self attention modules for the backbone network', action='store_true')
 
     # Dataset config
     parser.add_argument('--dataset_subset', type=str, default='constant',
