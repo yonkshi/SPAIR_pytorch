@@ -5,6 +5,7 @@ import argparse
 import os
 import time
 import requests
+import gc
 
 import numpy as np
 import cv2
@@ -79,7 +80,10 @@ def train(run_manager):
     benchmark_time = time.time()
     debug_tools.benchmark_init()
     # Main training loop
+
+
     for global_step, batch in run_manager.iterate_data():
+        spair_optim.zero_grad()
 
         x_image, y_bbox, y_digit_count = batch
         x_image = x_image.to(device)
@@ -88,7 +92,7 @@ def train(run_manager):
 
         log('Iteration', global_step)
         debug_tools.benchmark_init()
-        spair_optim.zero_grad()
+
         loss, out_img, z_where, z_pres = spair_net(x_image)
         # log('===> loss:', '{:.4f}'.format(loss.item()))
 
@@ -105,10 +109,10 @@ def train(run_manager):
             writer.add_scalar('accuracy/object_count_accuracy', count_accuracy, global_step)
 
         # Save model
-        if global_step % 100 == 0 and global_step > 0:
+        if global_step % 50 == 0 and global_step > 0:
             # logging stuff
-            image_out = out_img[0]
-            image_in = x_image[0]
+            image_out = out_img[0].detach()
+            image_in = x_image[0].detach()
             combined_image = torch.cat([image_in, image_out], dim=2)
             writer.add_image('SPAIR input_output', combined_image, global_step)
 
@@ -121,7 +125,20 @@ def train(run_manager):
             torch.save(spair_net.state_dict(), save_path)
             benchmark_time = time.time()
 
-        # print('=================\n\n')
+        if global_step % 1 == 0:
+            should_break = False
+            count = 0
+            for obj in gc.get_objects():
+                try:
+                    if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                        # print(type(obj), obj.size(), obj.name)
+                        should_break = True
+                        count += 1
+                except:
+                    pass
+
+            print('total tensors alive', count)
+            # if should_break: import ipdb; ipdb.set_trace()
 
         # torch.cuda.empty_cache()
 
@@ -168,7 +185,7 @@ def parse_args(run_log_path):
     parser.add_argument('--hw_prior', type=float, default=[3., 0.5], nargs=2,
                         help='z prior for the height and width of bbox')
 
-    parser.add_argument('--backbone_self_attention', help='Enable self attention modules for the backbone network', action='store_true')
+    parser.add_argument('--backbone_self_attention', help='Use self attention for backbone network', action='store_true')
 
     # Dataset config
     parser.add_argument('--dataset_subset', type=str, default='constant',

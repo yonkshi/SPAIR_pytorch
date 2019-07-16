@@ -26,8 +26,6 @@ overnight:
 	python3 train.py --gpu --original_spair  --z_pres uniform_prior || true
 
 test_new_features:
-	python3 train.py --gpu --use_z_where_decoder || true
-	python3 train.py --gpu --use_uber_trick || true
-	python3 train.py --gpu --use_conv_z_attr || true
-	python3 train.py --gpu --z_pres none || true
-	python3 train.py --gpu --z_pres uniform || true
+	python3 train.py --gpu --backbone_self_attention || true
+	python3 train.py --gpu --use_uber_trick --use_conv_z_attr --z_pres no_prior --conv_neighbourhood 2 --backbone_self_attention || true
+
