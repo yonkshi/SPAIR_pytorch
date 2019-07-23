@@ -382,7 +382,7 @@ class SpairBase(nn.Module):
         importance = importance / importance.sum(dim=1, keepdim=True)
         importance = importance.expand_as(img)
         # scale gradient
-        weighted_grads_image = img * importance # + (1 - importance) * img.detach()
+        weighted_grads_image = img * importance + (1 - importance) * img.detach()
         # TODO DELETE ME
         # weighted_grads_image.register_hook(lambda grad: debug_tools.grad_nan_hook('weighted image', grad))
         # TODO END DELETE ME
@@ -397,7 +397,7 @@ class SpairBase(nn.Module):
         # print('============ Losses =============')
         # Reconstruction loss
         recon_loss = F.binary_cross_entropy(recon_x, x, reduction='sum')
-        self.writer.add_scalar('losses/reconst', recon_loss, self.global_step)
+        self.writer.add_scalar('losses/reconst', recon_loss.detach(), self.global_step)
         # print('Reconstruction loss:', '{:.4f}'.format(recon_loss.item()))
         # KL loss with Beta factor
         kl_loss = 0
@@ -405,13 +405,13 @@ class SpairBase(nn.Module):
             kl_mean = torch.mean(torch.sum(z_kl, dim=[1,2,3])) # batch mean
             kl_loss += kl_mean
             # print('KL_%s_loss:' % name, '{:.4f}'.format(kl_mean.item()))
-            self.writer.add_scalar('losses/KL{}'.format(name), kl_mean, self.global_step )
+            self.writer.add_scalar('losses/KL{}'.format(name), kl_mean.detach(), self.global_step )
 
 
         loss = recon_loss + cfg.VAE_BETA * kl_loss + self.normalizing_flow_loss
         # print('\n ===> total loss:', '{:.4f}'.format(loss.item()))
-        self.writer.add_scalar('losses/normalizing_flow', self.normalizing_flow_loss, self.global_step)
-        self.writer.add_scalar('losses/total', loss, self.global_step)
+        # self.writer.add_scalar('losses/normalizing_flow', self.normalizing_flow_loss.detach(), self.global_step)
+        self.writer.add_scalar('losses/total', loss.detach(), self.global_step)
 
 
         return loss
@@ -465,7 +465,7 @@ class Spair(SpairBase):
         context_mat = {}
         edge_element = self.virtual_edge_element[None, :].repeat(self.batch_size, 1)
         self.training_wheel = exponential_decay(**cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
-        self.writer.add_scalar('training_wheel', self.training_wheel, self.global_step)
+        self.writer.add_scalar('training_wheel', self.training_wheel.detach(), self.global_step)
 
         self.z_where = torch.empty(self.batch_size, 4, H, W).to(self.device) # 4 = xt, yt, xs, ys
         self.z_attr = torch.empty(self.batch_size, cfg.N_ATTRIBUTES, H, W,).to(self.device)
@@ -703,7 +703,7 @@ class ConvSpair(SpairBase):
         _, H, W = self.feature_space_dim
 
         self.training_wheel = exponential_decay(**cfg.LATENT_VAR_TRAINING_WHEEL_PARAM)
-        self.writer.add_scalar('training_wheel', self.training_wheel, self.global_step)
+        self.writer.add_scalar('training_wheel', self.training_wheel.detach(), self.global_step)
         # s = torch.cuda.Stream()
         # # # Iterate through each grid cell and bounding boxes for that cell
         # with torch.cuda.stream(s):

@@ -83,7 +83,6 @@ def train(run_manager):
 
 
     for global_step, batch in run_manager.iterate_data():
-        spair_optim.zero_grad()
 
         x_image, y_bbox, y_digit_count = batch
         x_image = x_image.to(device)
@@ -92,7 +91,7 @@ def train(run_manager):
 
         log('Iteration', global_step)
         debug_tools.benchmark_init()
-
+        spair_optim.zero_grad()
         loss, out_img, z_where, z_pres = spair_net(x_image)
         # log('===> loss:', '{:.4f}'.format(loss.item()))
 
@@ -100,8 +99,8 @@ def train(run_manager):
         spair_optim.step()
 
         # Log average precision metric every 5 step after 1000 iterations (when trainig_wheel is off)
-        if global_step > 1000 and global_step % 5 == 0: # iteration > 1000 and
-            meanAP = metric.mAP(z_where, z_pres, y_bbox, y_digit_count)
+        if global_step > 1000 and global_step % 50 == 0: # global_step > 1000 and
+            meanAP = metric.mAP_igiveup(z_where, z_pres, y_bbox, y_digit_count)
             log('Bbox Average Precision:', meanAP.item())
             writer.add_scalar('accuracy/bbox_average_precision', meanAP, global_step)
 
@@ -109,7 +108,7 @@ def train(run_manager):
             writer.add_scalar('accuracy/object_count_accuracy', count_accuracy, global_step)
 
         # Save model
-        if global_step % 50 == 0 and global_step > 0:
+        if global_step % 100 == 0 and global_step > 0:
             # logging stuff
             image_out = out_img[0].detach()
             image_in = x_image[0].detach()
@@ -124,21 +123,6 @@ def train(run_manager):
             save_path = os.path.join(run_log_path, 'checkpoints', check_point_name)
             torch.save(spair_net.state_dict(), save_path)
             benchmark_time = time.time()
-
-        if global_step % 1 == 0:
-            should_break = False
-            count = 0
-            for obj in gc.get_objects():
-                try:
-                    if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                        # print(type(obj), obj.size(), obj.name)
-                        should_break = True
-                        count += 1
-                except:
-                    pass
-
-            print('total tensors alive', count)
-            # if should_break: import ipdb; ipdb.set_trace()
 
         # torch.cuda.empty_cache()
 
