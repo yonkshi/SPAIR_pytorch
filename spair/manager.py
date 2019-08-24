@@ -54,6 +54,9 @@ class RunManager():
             log(args_name, args_val)
         log('======================= ')
 
+    def get_instance(self):
+        return instance
+
 
 
 

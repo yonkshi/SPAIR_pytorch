@@ -50,6 +50,7 @@ def main():
     else:
         train(run_manager)
 
+
 def train(run_manager):
 
     image_shape = cfg.INPUT_IMAGE_SHAPE

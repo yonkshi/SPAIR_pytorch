@@ -20,18 +20,18 @@ INPUT_IMAGE_SHAPE = [1, 128, 128] # originally 128 128 TODO change me back
 
 DEFAULT_MLP_TOPOLOGY = [100, 100]
 DEFAULT_BACKBONE_TOPOLOGY = [
-    dict(filters=128, kernel_size=4, stride=3),
-    dict(filters=128, kernel_size=4, stride=2),
-    dict(filters=128, kernel_size=4, stride=2),
-    dict(filters=128, kernel_size=1, stride=1),
-    dict(filters=128, kernel_size=1, stride=1),
-    dict(filters=128, kernel_size=1, stride=1),
+    dict(out_channels=128, kernel_size=4, stride=3), # out_channels = filters
+    dict(out_channels=128, kernel_size=4, stride=2),
+    dict(out_channels=128, kernel_size=4, stride=2),
+    dict(out_channels=128, kernel_size=1, stride=1),
+    dict(out_channels=128, kernel_size=1, stride=1),
+    dict(out_channels=128, kernel_size=1, stride=1),
 ]
 CONV_OBJECT_ENCODER_TOPOLOGY = [ # Decoder is the opposite topology
-    dict(filters=16, kernel_size=4, stride=2), # (32, 13, 13)
-    dict(filters=16, kernel_size=4, stride=2), # (32, 5, 5)
-    dict(filters=16, kernel_size=2, stride=1), # (32, 5, 5)
-    dict(filters=16, kernel_size=1, stride=1), # (32, 2, 2)
+    dict(out_channels=16, kernel_size=4, stride=2), # (32, 13, 13)
+    dict(out_channels=16, kernel_size=4, stride=2), # (32, 5, 5)
+    dict(out_channels=16, kernel_size=2, stride=1), # (32, 5, 5)
+    dict(out_channels=16, kernel_size=1, stride=1), # (32, 2, 2)
 ]
 
 N_BACKBONE_FEATURES = 100

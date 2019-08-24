@@ -26,11 +26,10 @@ from spair.logging import *
 
 def main():
     run_name = datetime.today().strftime('%b-%d') + '-' + generate_slug(2)
-    log_path = 'logs/%s' % run_name
-
+    log_path = 'logs/hp_search/%s' % run_name
+    writer = SummaryWriter(log_path)
     args = parse_args(log_path)
     # Setup TensorboardX writer
-    writer = SummaryWriter(args.log_path)
     # Setup logger
     init_logger(log_path)
 
@@ -39,16 +38,46 @@ def main():
     dataset_subset_name = args.dataset_subset
     data = SimpleScatteredMNISTDataset(dataset_path, dataset_subset_name)
 
-    run_manager = RunManager(run_name=run_name, dataset=data, device=device, writer=writer, run_args=args)
+    run_manager = RunManager(run_name=run_name, dataset=data, device=device, writer=None, run_args=args)
 
     if not cfg.IS_LOCAL:
         try:
-            train(run_manager)
+            search_hp(log_path, run_manager)
         except Exception as e:
             telegram_yonk('An error had occured:{}, step:{}'.format(run_name, RunManager.global_step) )
             raise e
     else:
-        train(run_manager)
+        search_hp(log_path, run_manager)
+
+
+def search_hp(log_path, run_manager):
+    '''
+    Performs hyperparameter search on the most optimal prior for Height and Width for bbox.
+    :param run_manager:
+    :param search_type:
+    :return:
+    '''
+
+    hp_min, hp_max = run_manager.run_args.hp_search_range
+    steps = run_manager.run_args.hp_search_steps
+    for step in range(steps):
+        if run_manager.run_args.hp_search_coarse:
+            # Randomly select a HP for the random search
+            hw_mean = np.random.uniform(hp_min, hp_max)
+            run_manager.run_args.hw_prior = [hw_mean, 0.5]
+
+            log_sub_path = '{}_hp_{}'.format(log_path, hw_mean)
+            RunManager.writer = SummaryWriter(log_sub_path)
+
+            train(run_manager)
+            pass
+        else:
+            # TODO binary Search
+            pass
+
+
+
+    pass
 
 def train(run_manager):
 
@@ -81,6 +110,7 @@ def train(run_manager):
     debug_tools.benchmark_init()
     # Main training loop
 
+    mAP_record = []
 
     for global_step, batch in run_manager.iterate_data():
 
@@ -102,6 +132,7 @@ def train(run_manager):
         if global_step > 1000 and global_step % 50 == 0: # global_step > 1000 and
             meanAP = metric.mAP_igiveup(z_where, z_pres, y_bbox, y_digit_count)
             log('Bbox Average Precision:', meanAP.item())
+            mAP_record.append(meanAP.item())
             writer.add_scalar('accuracy/bbox_average_precision', meanAP, global_step)
 
             count_accuracy = metric.object_count_accuracy(z_pres, y_digit_count)
@@ -125,12 +156,8 @@ def train(run_manager):
             benchmark_time = time.time()
 
         # torch.cuda.empty_cache()
+    return mAP_record
 
-
-    telegram_yonk('Run completed! name:{}'.format(run_manager.run_name))
-
-    for name, param in spair_net.named_children():
-        print(name)
 
 def continue_training(args):
     if not args.continue_from:
@@ -142,7 +169,6 @@ def continue_training(args):
     model_pkl = os.path.join('logs/', log_path, 'checkpoints', filename)
     model_dict = torch.load(model_pkl)
     return model_dict, checkpoint_num
-
 
 def parse_args(run_log_path):
     parser = argparse.ArgumentParser()
@@ -188,6 +214,14 @@ def parse_args(run_log_path):
 
     parser.add_argument('--check_point_number', type=int, default=0,
                         help='checkpoint number to load from')
+
+    # HP Search configuration
+    parser.add_argument('--hp_search_coarse', help='performs a random search on HP',
+                        action='store_true')
+    parser.add_argument('--hp_search_range', type=float, default=[-10., 10.], nargs=2,
+                        help='range of which hp search is performed')
+    parser.add_argument('--hp_search_steps', type=int, default=20,
+                        help='number of steps performed by hyperparameter search')
 
     args = parser.parse_args()
     return args

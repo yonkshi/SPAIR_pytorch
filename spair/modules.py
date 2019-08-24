@@ -21,7 +21,7 @@ class Backbone(Module):
         :return:
         '''
         super().__init__()
-        self.topology = topology
+        self.topology = topology.copy()
         n_in_channels = input_shape[0] # Assuming pytorch style [C, H, W] tensor, ignoring batch
         self.input_shape = input_shape
 
@@ -61,7 +61,7 @@ class Backbone(Module):
         # Builds internal layers except for the last layer
         for i, layer in enumerate(self.topology):
             layer['in_channels'] = n_prev
-            layer['out_channels'] = layer.pop('filters')
+            # layer['out_channels'] = layer.pop('filters')
 
             net['conv_%d' % i] = Conv2d(**layer)
             net['act_%d' % i] = ReLU()
