@@ -13,19 +13,19 @@ class RunManager():
     run_args = None
     run_name = None
 
-    def __init__(self, run_name, dataset, device, writer, run_args):
-        global instance
-        assert instance is None, 'There is already a RunManager running, please do not re-initialize it'
+    def __init__(self,run_name, dataset, device, writer, run_args):
         instance = self
+        self.reset(run_name, dataset, device, writer, run_args)
 
+    def reset(self, run_name, dataset, device, writer, run_args):
         RunManager.run_name = run_name
         RunManager._dataset = dataset
         RunManager.device = device
         RunManager.writer = writer
         RunManager.run_args = run_args
+        RunManager.global_step = 0
+        self.__log_meta_data()
 
-
-        self.__write__meta_data()
 
     def iterate_data(self):
         ''' Dataset iterator class '''
@@ -45,7 +45,11 @@ class RunManager():
                     return
                 yield global_step, batch
 
-    def __write__meta_data(self):
+    def __log_meta_data(self):
+        '''
+        Log run args metadata in to the logging directory
+        :return:
+        '''
 
         log('===== %s ====' % RunManager.run_name)
         log('===== run config ======')

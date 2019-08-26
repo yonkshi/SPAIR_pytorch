@@ -28,56 +28,54 @@ def main():
     run_name = datetime.today().strftime('%b-%d') + '-' + generate_slug(2)
     log_path = 'logs/hp_search/%s' % run_name
     writer = SummaryWriter(log_path)
-    args = parse_args(log_path)
+    run_args = parse_args(log_path)
     # Setup TensorboardX writer
     # Setup logger
     init_logger(log_path)
 
-    device = torch.device("cuda" if (torch.cuda.is_available() and args.gpu) else "cpu")
-    dataset_path = 'data/' + args.dataset_filename
-    dataset_subset_name = args.dataset_subset
-    data = SimpleScatteredMNISTDataset(dataset_path, dataset_subset_name)
-
-    run_manager = RunManager(run_name=run_name, dataset=data, device=device, writer=None, run_args=args)
-
-    if not cfg.IS_LOCAL:
-        try:
-            search_hp(log_path, run_manager)
-        except Exception as e:
-            telegram_yonk('An error had occured:{}, step:{}'.format(run_name, RunManager.global_step) )
-            raise e
-    else:
-        search_hp(log_path, run_manager)
+    device = torch.device("cuda" if (torch.cuda.is_available() and run_args.gpu) else "cpu")
+    dataset_path = 'data/' + run_args.dataset_filename
+    dataset_subset_name = run_args.dataset_subset
 
 
-def search_hp(log_path, run_manager):
-    '''
-    Performs hyperparameter search on the most optimal prior for Height and Width for bbox.
-    :param run_manager:
-    :param search_type:
-    :return:
-    '''
+    hp_min, hp_max = run_args.hp_search_range
+    steps = run_args.hp_search_steps
 
-    hp_min, hp_max = run_manager.run_args.hp_search_range
-    steps = run_manager.run_args.hp_search_steps
-    for step in range(steps):
-        if run_manager.run_args.hp_search_coarse:
-            # Randomly select a HP for the random search
-            hw_mean = np.random.uniform(hp_min, hp_max)
-            run_manager.run_args.hw_prior = [hw_mean, 0.5]
 
+    if run_args.hp_search_coarse:
+        # Randomly select a set of HP for the random search
+        random_set = np.random.uniform(hp_min, hp_max, steps)
+        for hw_mean in random_set:
+
+            run_args.hw_prior = [hw_mean, 0.5]
+            log('=== Running with HW Mean:', hw_mean )
+
+            # Resetting RunManager
             log_sub_path = '{}_hp_{}'.format(log_path, hw_mean)
-            RunManager.writer = SummaryWriter(log_sub_path)
+            writer = SummaryWriter(log_sub_path)
+            run_manager = reset_run(run_name, device, writer, run_args, dataset_path, dataset_subset_name)
 
-            train(run_manager)
-            pass
-        else:
-            # TODO binary Search
-            pass
+            if not cfg.IS_LOCAL:
+                try:
+                    train(run_manager)
+                except Exception as e:
+                    telegram_yonk('An error had occured:{}, step:{}'.format(run_name, RunManager.global_step))
+                    raise e
+            else:
+                train(run_manager)
+
+    else:
+        # TODO binary Search
+        pass
 
 
 
-    pass
+
+def reset_run(run_name, device, writer, run_args, dataset_path, dataset_subset_name):
+    data = SimpleScatteredMNISTDataset(dataset_path, dataset_subset_name)
+    run_manager = RunManager(run_name=run_name, dataset=data, device=device, writer=writer, run_args=run_args)
+    return run_manager
+
 
 def train(run_manager):
 

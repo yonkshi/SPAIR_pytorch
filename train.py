@@ -100,7 +100,7 @@ def train(run_manager):
         spair_optim.step()
 
         # Log average precision metric every 5 step after 1000 iterations (when trainig_wheel is off)
-        if global_step > 1000 and global_step % 50 == 0: # global_step > 1000 and
+        if global_step > 1000 and global_step % 100 == 0: # global_step > 1000 and
             meanAP = metric.mAP_igiveup(z_where, z_pres, y_bbox, y_digit_count)
             log('Bbox Average Precision:', meanAP.item())
             writer.add_scalar('accuracy/bbox_average_precision', meanAP, global_step)
