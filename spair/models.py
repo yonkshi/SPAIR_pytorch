@@ -382,7 +382,7 @@ class SpairBase(nn.Module):
         importance = importance / importance.sum(dim=1, keepdim=True)
         importance = importance.expand_as(img)
         # scale gradient
-        weighted_grads_image = img * importance + (1 - importance) * img.detach()
+        weighted_grads_image = img * importance # # + (1 - importance) * img.detach() # TODO Reinstate me!!!!!!!!
         # TODO DELETE ME
         # weighted_grads_image.register_hook(lambda grad: debug_tools.grad_nan_hook('weighted image', grad))
         # TODO END DELETE ME

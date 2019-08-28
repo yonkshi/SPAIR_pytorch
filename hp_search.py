@@ -44,7 +44,8 @@ def main():
 
     if run_args.hp_search_coarse:
         # Randomly select a set of HP for the random search
-        random_set = np.random.uniform(hp_min, hp_max, steps)
+        best_one_yet = 5.013100487582577
+        random_set = np.concatenate(([best_one_yet], np.random.uniform(hp_min, hp_max, steps)))
         for hw_mean in random_set:
 
             run_args.hw_prior = [hw_mean, 0.5]
@@ -216,7 +217,7 @@ def parse_args(run_log_path):
     # HP Search configuration
     parser.add_argument('--hp_search_coarse', help='performs a random search on HP',
                         action='store_true')
-    parser.add_argument('--hp_search_range', type=float, default=[-10., 10.], nargs=2,
+    parser.add_argument('--hp_search_range', type=float, default=[4.5, 5.5], nargs=2,
                         help='range of which hp search is performed')
     parser.add_argument('--hp_search_steps', type=int, default=20,
                         help='number of steps performed by hyperparameter search')

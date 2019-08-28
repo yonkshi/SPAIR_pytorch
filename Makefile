@@ -10,7 +10,7 @@ run_gpu:
 	python3 train.py --gpu
 
 hp_search:
-	python3 hp_search.py --gpu --backbone_self_attention --conv_neighbourhood 2 --use_uber_trick --use_conv_z_attr --hp_search_coarse
+	python3 hp_search.py --gpu --conv_neighbourhood 2 --use_uber_trick --use_conv_z_attr --hp_search_coarse --z_pres no_prior
 
 sync:
 	rsync -arvu --exclude=logs_v2/ --exclude=logs/ --exclude=spair/data/* --exclude=data/* -e ssh . naturalreaders:spair_pytorch
